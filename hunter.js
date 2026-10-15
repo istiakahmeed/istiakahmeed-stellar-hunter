@@ -2,7 +2,6 @@ import nodemailer from 'nodemailer';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// নিচে নতুন মডেল gemini-3.8-flash আপডেট করে দেওয়া হয়েছে
 const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
 const transporter = nodemailer.createTransport({
@@ -20,7 +19,10 @@ const searchQueries = [
   'medspa Los Angeles california contact',
   'roofing company Dallas Texas contact',
   'architecture firm Seattle Washington contact',
-  'accounting firm Boston Massachusetts contact'
+  'accounting firm Boston Massachusetts contact',
+  'interior design studio New York contact',
+  'plastic surgery clinic Beverly Hills contact',
+  'wealth management firm San Francisco contact'
 ];
 
 async function findNewClientWebsites() {
@@ -118,6 +120,7 @@ async function analyzeWebsite(url) {
   }
 }
 
+// Auto-Retry সহ ইমেইল জেনারেটর (503 High Demand আসলে ৩ বার চেষ্টা করবে)
 async function generateEmail(url, siteText) {
   const prompt = [
     `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com), a digital software & Next.js web engineering agency.`,
@@ -132,9 +135,17 @@ async function generateEmail(url, siteText) {
     `5. Sign off as: Istiak Ahmed, Founder, Stellar Worm (stellarworm.com)`
   ].join('\n');
 
-  const result = await model.generateContent(prompt);
-  const rawText = result.response.text().replace(/```json|```/g, '').trim();
-  return JSON.parse(rawText);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const rawText = result.response.text().replace(/```json|```/g, '').trim();
+      return JSON.parse(rawText);
+    } catch (err) {
+      if (attempt === 3) throw err;
+      console.log(`Gemini busy (Attempt ${attempt}/3), waiting 12s before retry...`);
+      await new Promise(r => setTimeout(r, 12000));
+    }
+  }
 }
 
 async function startHunting() {
