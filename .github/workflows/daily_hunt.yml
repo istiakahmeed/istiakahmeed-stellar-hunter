@@ -1,0 +1,30 @@
+name: Zero Cost Client Hunter
+
+on:
+  schedule:
+    # প্রতিদিন বাংলাদেশ সময় রাত ৯টায় (15:00 UTC) অটোমেটিক রান হবে
+    - cron: '0 15 * * *'
+  workflow_dispatch: # এটি থাকলে আপনি যেকোনো সময় বাটন চেপে টেস্ট রান করতে পারবেন
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Client Hunter Bot
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: node hunter.js
