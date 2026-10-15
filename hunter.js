@@ -13,67 +13,107 @@ const transporter = nodemailer.createTransport({
 });
 
 const searchQueries = [
-  'real estate agency in Austin Texas contact',
-  'dental clinic in Miami Florida website',
-  'boutique law firm in Chicago contact',
-  'medspa in Los Angeles california',
-  'roofing company in Dallas Texas',
-  'b2b saas startup in New York',
-  'fitness studio in Seattle Washington'
+  'real estate agency Austin Texas contact email',
+  'dental clinic Miami Florida contact',
+  'boutique law firm Chicago contact us',
+  'medspa Los Angeles california contact',
+  'roofing company Dallas Texas contact',
+  'architecture firm Seattle Washington contact',
+  'accounting firm Boston Massachusetts contact'
 ];
 
+// ১. DuckDuckGo থেকে ১০০% ফ্রিতে ক্লায়েন্টের ওয়েবসাইট খুঁজে বের করা
 async function findNewClientWebsites() {
   const randomQuery = searchQueries[Math.floor(Math.random() * searchQueries.length)];
   console.log(`Searching internet for: "${randomQuery}"...`);
 
   try {
-    const res = await fetch(`https://s.jina.ai/${encodeURIComponent(randomQuery)}`);
-    const text = await res.text();
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(randomQuery)}`;
+    const res = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      }
+    });
+    const html = await res.text();
 
-    const urls = [...text.matchAll(/https?:\/\/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g)]
-      .map(m => `https://${m[1]}`);
+    // DuckDuckGo-এর রেজাল্ট থেকে আসল ওয়েবসাইটের লিংক বের করা
+    const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)].map(m => decodeURIComponent(m[1]));
+    const origins = uddgMatches.map(u => {
+      try { return new URL(u).origin; } catch { return null; }
+    }).filter(Boolean);
 
     const blacklist = [
-      'google', 'yelp', 'facebook', 'instagram', 'linkedin', 'twitter',
-      'youtube', 'yellowpages', 'bbb.org', 'jina.ai', 'github', 'wikipedia',
-      'tripadvisor', 'reddit', 'pinterest', 'apple', 'microsoft', 'amazon', 'forbes'
+      'duckduckgo', 'google', 'yelp', 'facebook', 'instagram', 'linkedin', 'twitter',
+      'youtube', 'yellowpages', 'bbb.org', 'github', 'wikipedia', 'tripadvisor',
+      'reddit', 'pinterest', 'apple', 'microsoft', 'amazon', 'forbes', 'expertise.com',
+      'angi.com', 'thumbtack', 'houzz', 'zillow', 'realtor.com', 'healthgrades', 'zocdoc'
     ];
 
-    const cleanUrls = [...new Set(urls)].filter(url => 
+    const cleanUrls = [...new Set(origins)].filter(url => 
       !blacklist.some(badWord => url.toLowerCase().includes(badWord))
     );
 
-    return cleanUrls.slice(0, 10);
+    return cleanUrls.slice(0, 8);
   } catch (err) {
     console.error("Search error:", err);
     return [];
   }
 }
 
+// ২. সরাসরি ক্লায়েন্টের ওয়েবসাইট ও Contact পেজ স্ক্যান করে ইমেইল বের করা
 async function analyzeWebsite(url) {
   try {
-    const res = await fetch(`https://r.jina.ai/${url}`);
-    const content = await res.text();
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      signal: AbortSignal.timeout(10000)
+    });
+    let html = await res.text();
 
-    const emailMatch = content.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
+    // হোমপেজে ইমেইল না থাকলে /contact পেজও চেক করবে
+    try {
+      const contactRes = await fetch(`${url}/contact`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (contactRes.ok) {
+        html += " " + await contactRes.text();
+      }
+    } catch {}
+
+    const emailMatch = html.match(/([a-zA-Z0-9._+-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
     
     const validEmails = emailMatch ? [...new Set(emailMatch)].filter(e => {
       const lower = e.toLowerCase();
       return !lower.endsWith('.png') && 
              !lower.endsWith('.jpg') && 
+             !lower.endsWith('.jpeg') && 
              !lower.endsWith('.webp') && 
              !lower.endsWith('.svg') && 
+             !lower.endsWith('.gif') && 
              !lower.endsWith('.js') && 
              !lower.endsWith('.css') &&
+             !lower.endsWith('.woff') &&
              !lower.includes('sentry') && 
              !lower.includes('example') && 
              !lower.includes('wixpress') &&
-             !lower.includes('yourdomain');
+             !lower.includes('yourdomain') &&
+             !lower.includes('email.com') &&
+             !lower.includes('domain.com') &&
+             lower.length < 45;
     }) : [];
+
+    // HTML ট্যাগ সরিয়ে পরিষ্কার টেক্সট নেওয়া
+    const cleanText = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 2500);
 
     return {
       email: validEmails[0] || null,
-      textSummary: content.slice(0, 2500)
+      textSummary: cleanText
     };
   } catch (err) {
     console.error(`Error scanning ${url}:`, err.message);
@@ -81,6 +121,7 @@ async function analyzeWebsite(url) {
   }
 }
 
+// ৩. Gemini AI দিয়ে কাস্টম কোল্ড ইমেইল লেখানো
 async function generateEmail(url, siteText) {
   const prompt = [
     `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com), a digital software & Next.js web engineering agency.`,
@@ -100,6 +141,7 @@ async function generateEmail(url, siteText) {
   return JSON.parse(rawText);
 }
 
+// ৪. মেইন ইঞ্জিন রান করা
 async function startHunting() {
   const websites = await findNewClientWebsites();
   console.log(`Found ${websites.length} potential business websites:`, websites);
@@ -108,7 +150,7 @@ async function startHunting() {
     console.log(`\nScanning ${url}...`);
     const { email, textSummary } = await analyzeWebsite(url);
 
-    if (!email || textSummary.length < 100) {
+    if (!email || textSummary.length < 50) {
       console.log(`No valid email found on ${url}, skipping.`);
       continue;
     }
@@ -125,7 +167,7 @@ async function startHunting() {
       });
 
       console.log(`Successfully sent email to ${email} (${url})!`);
-      await new Promise(resolve => setTimeout(resolve, 45000));
+      await new Promise(resolve => setTimeout(resolve, 30000));
     } catch (err) {
       console.error(`Failed to send to ${email}:`, err.message);
     }
