@@ -2,7 +2,8 @@ import nodemailer from 'nodemailer';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+// নিচে নতুন মডেল gemini-3.8-flash আপডেট করে দেওয়া হয়েছে
+const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -22,7 +23,6 @@ const searchQueries = [
   'accounting firm Boston Massachusetts contact'
 ];
 
-// ১. DuckDuckGo থেকে ১০০% ফ্রিতে ক্লায়েন্টের ওয়েবসাইট খুঁজে বের করা
 async function findNewClientWebsites() {
   const randomQuery = searchQueries[Math.floor(Math.random() * searchQueries.length)];
   console.log(`Searching internet for: "${randomQuery}"...`);
@@ -36,7 +36,6 @@ async function findNewClientWebsites() {
     });
     const html = await res.text();
 
-    // DuckDuckGo-এর রেজাল্ট থেকে আসল ওয়েবসাইটের লিংক বের করা
     const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)].map(m => decodeURIComponent(m[1]));
     const origins = uddgMatches.map(u => {
       try { return new URL(u).origin; } catch { return null; }
@@ -60,7 +59,6 @@ async function findNewClientWebsites() {
   }
 }
 
-// ২. সরাসরি ক্লায়েন্টের ওয়েবসাইট ও Contact পেজ স্ক্যান করে ইমেইল বের করা
 async function analyzeWebsite(url) {
   try {
     const res = await fetch(url, {
@@ -69,7 +67,6 @@ async function analyzeWebsite(url) {
     });
     let html = await res.text();
 
-    // হোমপেজে ইমেইল না থাকলে /contact পেজও চেক করবে
     try {
       const contactRes = await fetch(`${url}/contact`, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
@@ -97,12 +94,12 @@ async function analyzeWebsite(url) {
              !lower.includes('example') && 
              !lower.includes('wixpress') &&
              !lower.includes('yourdomain') &&
+             !lower.includes('company.com') &&
              !lower.includes('email.com') &&
              !lower.includes('domain.com') &&
              lower.length < 45;
     }) : [];
 
-    // HTML ট্যাগ সরিয়ে পরিষ্কার টেক্সট নেওয়া
     const cleanText = html
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -121,7 +118,6 @@ async function analyzeWebsite(url) {
   }
 }
 
-// ৩. Gemini AI দিয়ে কাস্টম কোল্ড ইমেইল লেখানো
 async function generateEmail(url, siteText) {
   const prompt = [
     `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com), a digital software & Next.js web engineering agency.`,
@@ -141,7 +137,6 @@ async function generateEmail(url, siteText) {
   return JSON.parse(rawText);
 }
 
-// ৪. মেইন ইঞ্জিন রান করা
 async function startHunting() {
   const websites = await findNewClientWebsites();
   console.log(`Found ${websites.length} potential business websites:`, websites);
