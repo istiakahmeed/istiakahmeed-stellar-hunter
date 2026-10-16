@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import nodemailer from 'nodemailer';
 import { neon } from '@neondatabase/serverless';
 
-// Vercel-কে ক্যাশ করা থেকে বিরত রাখা (যাতে সবসময় লাইভ ডেটা দেখায়)
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
@@ -36,6 +35,42 @@ async function getDb() {
     )
   `;
   return sql;
+}
+
+// ইমেইল থেকে স্মার্টভাবে মানুষ বা ব্যবসার নাম বের করার ফাংশন (No more "Hello gmail team"!)
+function getSmartNameFromEmail(rawInput) {
+  // যদি ইউজার "Name, email@gmail.com" বা "email@gmail.com - Name" এভাবে দেয়
+  if (rawInput.includes('-')) {
+    const parts = rawInput.split('-').map(s => s.trim());
+    const emailPart = parts.find(p => p.includes('@'));
+    const namePart = parts.find(p => !p.includes('@'));
+    if (emailPart && namePart) return { email: emailPart, name: namePart, isPersonal: false };
+  }
+
+  const email = rawInput.trim();
+  const [localPart, domainPart] = email.split('@');
+  if (!domainPart) return { email, name: 'there', isPersonal: true };
+
+  const freeProviders = ['gmail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'live', 'aol', 'protonmail', 'ymail', 'msn'];
+  const domainBase = domainPart.split('.')[0].toLowerCase();
+
+  // যদি জিমেইল বা ইয়াহু হয়
+  if (freeProviders.includes(domainBase)) {
+    const cleanLocal = localPart.replace(/[0-9._+-]/g, ' ').trim();
+    const genericWords = ['info', 'contact', 'hello', 'support', 'admin', 'sales', 'office', 'team', 'mail', 'enquiries'];
+    
+    if (!cleanLocal || genericWords.includes(cleanLocal.toLowerCase()) || cleanLocal.length < 3) {
+      return { email, name: 'there', isPersonal: true };
+    }
+    // নামের প্রথম অক্ষর বড় হাতের করা (যেমন: "istiak ahmed" -> "Istiak")
+    const firstWord = cleanLocal.split(' ')[0];
+    const capitalized = firstWord.charAt(0).toUpperCase() + firstWord.slice(1).toLowerCase();
+    return { email, name: capitalized, isPersonal: true };
+  }
+
+  // যদি কোম্পানির নিজস্ব ডোমেইন হয় (যেমন: info@apexdental.com -> Apexdental)
+  const companyName = domainBase.charAt(0).toUpperCase() + domainBase.slice(1);
+  return { email, name: companyName, isPersonal: false };
 }
 
 function extractEmails(text) {
@@ -109,8 +144,8 @@ function auditWebsite(html) {
   };
 }
 
-// ১০০% Anti-Spam Conversational Pitch (Zero Links, Spintax Variations)
-function buildAntiSpamPitch({ type, businessName, flawSummary, customTopic }) {
+// ১০০% Anti-Spam Conversational Pitch (Smart Greeting Fix)
+function buildAntiSpamPitch({ type, businessName, isPersonal = false, flawSummary, customTopic }) {
   const cleanName = (businessName || 'there')
     .replace(/\.(com|net|org|co\.uk|io|us|bd)$/i, '')
     .replace(/[-_]/g, ' ')
@@ -121,37 +156,31 @@ function buildAntiSpamPitch({ type, businessName, flawSummary, customTopic }) {
   const greet = greetings[Math.floor(Math.random() * greetings.length)];
   const sign = signOffs[Math.floor(Math.random() * signOffs.length)];
 
-  const subjectsNoSite = [
-    `quick question for ${cleanName}`,
-    `${cleanName} inquiry`,
-    `question about ${cleanName}`
-  ];
+  // নাম যদি "there" বা ব্যক্তিগত নাম হয়, তাহলে শেষে "team" যোগ করবে না!
+  const salutation =
+    cleanName.toLowerCase() === 'there'
+      ? `${greet} there,`
+      : isPersonal
+      ? `${greet} ${cleanName},`
+      : `${greet} ${cleanName} team,`;
 
-  const subjectsBadSite = [
-    `${cleanName} mobile view`,
-    `quick note on ${cleanName}'s site`,
-    `question for ${cleanName} team`
-  ];
+  const subjectTarget = cleanName.toLowerCase() === 'there' ? 'your business' : cleanName;
 
   if (type === 'NO_WEBSITE') {
-    const subj = subjectsNoSite[Math.floor(Math.random() * subjectsNoSite.length)];
     return {
-      subject: subj.toLowerCase(),
-      body: `${greet} ${cleanName} team,\n\nI was looking up your business earlier today and noticed you don't have a standalone website linked to your profile yet.\n\nI'm a web developer at Stellar Worm, and I actually put together a clean, fast homepage concept tailored for ${cleanName} to show how it could look on phones and laptops.\n\nMind if I send over a quick 2-minute preview for you to check out?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
+      subject: `quick question for ${subjectTarget}`.toLowerCase(),
+      body: `${salutation}\n\nI was looking up your business earlier today and noticed you don't have a standalone website linked to your profile yet.\n\nI'm a web developer at Stellar Worm, and I actually put together a clean, fast homepage concept tailored for you to show how it could look on phones and laptops.\n\nMind if I send over a quick 2-minute preview for you to check out?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
     };
   }
 
-  const subj = subjectsBadSite[Math.floor(Math.random() * subjectsBadSite.length)];
   return {
-    subject: subj.toLowerCase(),
-    body: `${greet} ${cleanName} team,\n\nI was checking out your website on my phone earlier and noticed ${flawSummary || customTopic || 'a couple of mobile layout bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I mocked up a cleaner, faster version of your homepage layout just to show the difference.\n\nMind if I send over the preview for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
+    subject: `quick question about ${subjectTarget}`.toLowerCase(),
+    body: `${salutation}\n\nI was checking out your online presence earlier and noticed ${flawSummary || customTopic || 'a couple of mobile layout and speed bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I mocked up a cleaner, faster homepage layout concept just to show the difference.\n\nMind if I send over a quick 2-minute preview for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
   };
 }
 
-// Engine 1: OpenStreetMap Overpass API (100% Unblockable Real Business Finder)
 async function fetchBusinessesFromOSM(category, location) {
   try {
-    // 1. Get City Coordinates from Nominatim
     const geoRes = await fetch(
       `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`,
       { headers: { 'User-Agent': 'StellarWormCRM/4.0 (contact@stellarworm.com)' }, signal: AbortSignal.timeout(5000) }
@@ -162,7 +191,6 @@ async function fetchBusinessesFromOSM(category, location) {
     const lat = parseFloat(geoData[0].lat);
     const lon = parseFloat(geoData[0].lon);
 
-    // 2. Map keyword for OSM
     const kw = category.toLowerCase().trim();
     let osmFilter = `["name"]`;
     if (kw.includes('dent')) osmFilter = `["amenity"~"dentist|clinic|doctors"]`;
@@ -173,7 +201,6 @@ async function fetchBusinessesFromOSM(category, location) {
     else if (kw.includes('real estate') || kw.includes('property')) osmFilter = `["office"~"estate_agent|company"]`;
     else if (kw.includes('hotel') || kw.includes('resort')) osmFilter = `["tourism"~"hotel|guest_house"]`;
 
-    // Query within 15km radius of the city
     const overpassQuery = `[out:json][timeout:8];(node${osmFilter}(around:15000,${lat},${lon});way${osmFilter}(around:15000,${lat},${lon}););out body 45;`;
     const osmRes = await fetch(`https://overpass-api.de/api/interpreter`, {
       method: 'POST',
@@ -187,7 +214,6 @@ async function fetchBusinessesFromOSM(category, location) {
   }
 }
 
-// Engine 2: Jina Web Search Fallback
 async function searchViaJina(query) {
   try {
     const res = await fetch(`https://r.jina.ai/https://www.bing.com/search?q=${encodeURIComponent(query)}`, {
@@ -219,7 +245,6 @@ export async function POST(req) {
     const body = await req.json();
     const sql = await getDb();
 
-    // ১. সিঙ্গেল ইমেইল পাঠানো (Anti-Spam Plain Text)
     if (body.action === 'send_single') {
       const { to, subject, text } = body;
       const cleanBody = text
@@ -241,7 +266,6 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
-    // ২. লিড ডিলিট করা
     if (body.action === 'delete_lead') {
       if (sql) {
         await sql`DELETE FROM stellar_leads WHERE email = ${body.email}`;
@@ -249,22 +273,29 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
-    // ৩. ম্যানুয়াল লিস্ট সেভ ও প্রস্তুত করা
+    // ম্যানুয়াল লিস্ট প্রস্তুত করা (Fixed Smart Name Parsing!)
     if (body.action === 'prepare_manual') {
       const { emailList, customTopic } = body;
-      const emails = emailList.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
+      const rawItems = emailList.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
       const leads = [];
 
-      for (const email of emails) {
-        const domain = email.split('@')[1]?.split('.')[0] || 'Client';
-        const pitch = buildAntiSpamPitch({ type: 'MANUAL', businessName: domain, customTopic });
+      for (const rawItem of rawItems) {
+        const { email, name, isPersonal } = getSmartNameFromEmail(rawItem);
+        const pitch = buildAntiSpamPitch({
+          type: 'MANUAL',
+          businessName: name,
+          isPersonal,
+          customTopic
+        });
+
+        const displayBusiness = name === 'there' ? email.split('@')[0] : name;
         const leadObj = {
-          business_name: domain,
+          business_name: displayBusiness,
           category: 'Manual',
           location: 'Direct',
           email,
           phone: 'Not Found',
-          website: `Direct (${domain})`,
+          website: 'Direct Outreach',
           lead_type: 'MANUAL',
           audit_score: 'N/A',
           issue: customTopic || 'Custom Outreach',
@@ -278,19 +309,17 @@ export async function POST(req) {
           await sql`
             INSERT INTO stellar_leads (business_name, category, location, email, phone, website, lead_type, audit_score, issue, subject, body, status)
             VALUES (${leadObj.business_name}, ${leadObj.category}, ${leadObj.location}, ${leadObj.email}, ${leadObj.phone}, ${leadObj.website}, ${leadObj.lead_type}, ${leadObj.audit_score}, ${leadObj.issue}, ${leadObj.subject}, ${leadObj.body}, 'Ready')
-            ON CONFLICT (email) DO UPDATE SET issue = EXCLUDED.issue
+            ON CONFLICT (email) DO UPDATE SET subject = EXCLUDED.subject, body = EXCLUDED.body
           `;
         }
       }
       return NextResponse.json({ success: true, leads });
     }
 
-    // ৪. অটো-হান্টার (OpenStreetMap Real Businesses + Website Scanner)
     if (body.action === 'discover') {
       const { category, location, targetFilter } = body;
       const leads = [];
 
-      // Step A: Fetch real local businesses from OpenStreetMap
       const osmElements = await fetchBusinessesFromOSM(category, location);
 
       for (const el of osmElements) {
@@ -302,14 +331,13 @@ export async function POST(req) {
         const phone = tags.phone || tags['contact:phone'] || tags['phone:mobile'] || 'Not Found';
         const osmEmail = tags.email || tags['contact:email'] || null;
 
-        // Case 1: Business has NO website (High-value local business on Map!)
         if (!website && (targetFilter === 'all' || targetFilter === 'no_website')) {
           if (phone === 'Not Found' && !osmEmail) continue;
           const cleanSlug = name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 18);
           const finalEmail = osmEmail || `${cleanSlug}@gmail.com`;
           const pitch = buildAntiSpamPitch({ type: 'NO_WEBSITE', businessName: name });
 
-          const leadObj = {
+          leads.push({
             business_name: name,
             category,
             location,
@@ -322,11 +350,9 @@ export async function POST(req) {
             subject: pitch.subject,
             body: pitch.body,
             status: osmEmail ? 'Ready' : 'Phone/WhatsApp Lead 📞'
-          };
-          leads.push(leadObj);
+          });
         }
 
-        // Case 2: Business HAS a website (Let's audit it)
         if (website && (targetFilter === 'all' || targetFilter === 'bad_website')) {
           let cleanUrl = website.startsWith('http') ? website : `https://${website}`;
           try {
@@ -358,7 +384,6 @@ export async function POST(req) {
         if (leads.length >= 12) break;
       }
 
-      // Step B: Web Scraper Supplement (Jina Proxy)
       if (leads.length < 6 && (targetFilter === 'all' || targetFilter === 'bad_website')) {
         const webUrls = await searchViaJina(`${category} ${location} contact`);
         const scanned = await Promise.all(
@@ -395,7 +420,6 @@ export async function POST(req) {
         leads.push(...scanned.filter(Boolean));
       }
 
-      // Save all discovered leads to PostgreSQL Database
       if (sql && leads.length > 0) {
         for (const leadObj of leads) {
           try {
