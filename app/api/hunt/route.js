@@ -13,55 +13,95 @@ const transporter = nodemailer.createTransport({
 });
 
 function extractEmails(text) {
-  const matches = text.match(/([a-zA-Z0-9._+-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
+  const decoded = text.replace(/&#64;/g, '@').replace(/[at]/gi, '@').replace(/mailto:/gi, ' ');
+  const matches = decoded.match(/([a-zA-Z0-9._+-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
   if (!matches) return [];
   return [...new Set(matches)].filter(e => {
     const l = e.toLowerCase();
-    return !l.match(/\.(png|jpg|jpeg|webp|svg|gif|js|css|woff|ttf)$/) &&
+    return !l.match(/\.(png|jpg|jpeg|webp|svg|gif|js|css|woff|ttf|ico)$/) &&
            !l.includes('sentry') && !l.includes('example') && 
            !l.includes('wixpress') && !l.includes('yourdomain') && 
-           !l.includes('company.com') && !l.includes('email.com') && l.length < 45;
+           !l.includes('company.com') && !l.includes('email.com') &&
+           !l.includes('duckduckgo') && !l.includes('bing.com') && l.length < 45;
   });
 }
 
-// ওয়েবসাইট অডিট ও স্কোরিং ইঞ্জিন
+// Multi-Engine Search (DuckDuckGo Lite + Bing Fallback)
+async function searchWebUrls(query) {
+  const urls = [];
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9'
+  };
+
+  // Engine 1: DuckDuckGo HTML
+  try {
+    const res1 = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers, signal: AbortSignal.timeout(5000) });
+    const html1 = await res1.text();
+    const uddg = [...html1.matchAll(/uddg=([^&"]+)/g)].map(m => decodeURIComponent(m[1]));
+    urls.push(...uddg);
+  } catch {}
+
+  // Engine 2: Bing Search Fallback (jodi DuckDuckGo block kore)
+  if (urls.length < 3) {
+    try {
+      const res2 = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`, { headers, signal: AbortSignal.timeout(5000) });
+      const html2 = await res2.text();
+      const bingLinks = [...html2.matchAll(/href="(https?:\/\/[^"]+)"/g)].map(m => m[1]);
+      urls.push(...bingLinks);
+    } catch {}
+  }
+
+  const blacklist = [
+    'duckduckgo', 'bing.com', 'microsoft', 'google', 'yelp', 'facebook', 'instagram',
+    'linkedin', 'twitter', 'youtube', 'yellowpages', 'yell.com', 'bbb.org', 'tripadvisor',
+    'angi', 'thumbtack', 'zocdoc', 'healthgrades', 'trustpilot', 'reddit', 'wikipedia',
+    'amazon', 'apple', 'pinterest', 'tiktok', 'foursquare', 'checkatrade', 'bark.com'
+  ];
+
+  const origins = urls.map(u => {
+    try { return new URL(u).origin; } catch { return null; }
+  }).filter(Boolean);
+
+  return [...new Set(origins)].filter(u => !blacklist.some(b => u.toLowerCase().includes(b))).slice(0, 7);
+}
+
 function auditWebsite(html) {
-  let score = 85;
+  let score = 82;
   const issues = [];
 
   if (html.includes('wp-content') || html.includes('wp-includes')) {
     score -= 20;
-    issues.push('Legacy WordPress bloat slowing down First Contentful Paint');
+    issues.push('Legacy WordPress plugins slowing down load time');
   }
   if (html.includes('wix.com') || html.includes('squarespace.com') || html.includes('godaddy')) {
     score -= 30;
-    issues.push('Restrictive page-builder architecture hurting SEO & speed');
+    issues.push('Restrictive page-builder template hurting SEO & speed');
   }
   if (!html.toLowerCase().includes('name="viewport"')) {
     score -= 25;
-    issues.push('Missing proper mobile viewport optimization');
+    issues.push('Missing mobile viewport optimization');
   }
   if (!html.toLowerCase().includes('meta name="description"')) {
     score -= 15;
-    issues.push('Missing technical SEO meta descriptions');
+    issues.push('Missing technical SEO meta description tags');
   }
   if (html.includes('jquery')) {
     score -= 10;
-    issues.push('Outdated jQuery scripts blocking main thread');
+    issues.push('Render-blocking jQuery scripts on main thread');
   }
 
   if (issues.length === 0) {
-    score = 68;
-    issues.push('Generic UI layout lacking high-converting micro-interactions');
+    score = 64;
+    issues.push('Outdated UI/UX layout lacking modern conversion triggers');
   }
 
   return {
-    score: Math.max(score, 22),
+    score: Math.max(score, 24),
     flawSummary: issues.slice(0, 2).join(' + ')
   };
 }
 
-// Gemini AI + Smart Fallback Pitch Generator
 async function craftPitch({ type, businessName, url, flawSummary, customTopic }) {
   const cleanName = businessName || (url ? new URL(url).hostname.replace('www.', '') : 'your business');
 
@@ -70,11 +110,11 @@ async function craftPitch({ type, businessName, url, flawSummary, customTopic })
     let prompt = "";
 
     if (type === 'NO_WEBSITE') {
-      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short cold email (under 75 words) to a local business (${cleanName}) that currently has NO official website (only social media/directory presence). Explain how launching a modern website or using a ready template from https://orthinal.com can help them capture high-intent Google search clients. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
+      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short cold email (under 75 words) to a local business (${cleanName}) that has NO official website. Explain how launching a modern website or using a ready template from https://orthinal.com can help them capture Google search clients. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
     } else if (type === 'BAD_WEBSITE') {
-      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short, peer-to-peer cold email (under 80 words) to ${cleanName} (${url}). Mention we ran a quick technical audit and noticed: ${flawSummary}. Explain how upgrading to a custom Next.js architecture (or a fast template from https://orthinal.com) can boost their speed and client conversion. End by asking if I can send a free 2-minute custom redesign concept. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
+      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short cold email (under 80 words) to ${cleanName} (${url}). Mention we ran a quick audit and noticed: ${flawSummary}. Explain how upgrading to a custom Next.js architecture (or a fast template from https://orthinal.com) can boost their speed and client conversion. End by asking if I can send a free 2-minute custom redesign concept. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
     } else {
-      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short cold email (under 80 words) to ${cleanName}. Context/Offer: ${customTopic || 'Upgrading web UI/UX and speed with Next.js or ready templates from orthinal.com'}. Ask if they want to see a quick 2-minute prototype. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
+      prompt = `You are Istiak Ahmed, Founder of Stellar Worm (https://stellarworm.com). Write a short cold email (under 80 words) to ${cleanName}. Context: ${customTopic || 'Upgrading web UI/UX and speed with Next.js or ready templates from orthinal.com'}. Return ONLY valid JSON: {"subject": "...", "body": "..."}`;
     }
 
     const res = await model.generateContent(prompt);
@@ -89,7 +129,7 @@ async function craftPitch({ type, businessName, url, flawSummary, customTopic })
     }
     return {
       subject: `quick idea for ${cleanName}'s website`,
-      body: `Hi Team,\n\nI was browsing ${url || 'your profile'} and noticed a few technical bottlenecks (${flawSummary || 'front-end speed & conversion flow'}) that might be costing you inbound leads.\n\nAt Stellar Worm (https://stellarworm.com), we build ultra-fast Next.js websites and ready-to-launch templates (https://orthinal.com) engineered to turn visitors into paying clients.\n\nAre you open to me sending over a free 2-minute homepage redesign concept for ${cleanName}?\n\nBest,\nIstiak Ahmed\nFounder, Stellar Worm (stellarworm.com)`
+      body: `Hi Team,\n\nI was browsing ${url || 'your site'} and noticed a few technical bottlenecks (${flawSummary || 'front-end speed & conversion flow'}) that might be costing you inbound leads.\n\nAt Stellar Worm (https://stellarworm.com), we build ultra-fast Next.js websites and ready-to-launch templates (https://orthinal.com) engineered to turn visitors into paying clients.\n\nAre you open to me sending over a free 2-minute homepage redesign concept for ${cleanName}?\n\nBest,\nIstiak Ahmed\nFounder, Stellar Worm (stellarworm.com)`
     };
   }
 }
@@ -98,7 +138,6 @@ export async function POST(req) {
   try {
     const body = await req.json();
 
-    // অ্যাকশন ১: সিঙ্গেল ইমেইল সেন্ড করা (Vercel Timeout এড়াতে ফ্রন্টএন্ড থেকে ১টা ১টা করে কল হবে)
     if (body.action === 'send_single') {
       const { to, subject, text } = body;
       await transporter.sendMail({
@@ -110,7 +149,6 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
-    // অ্যাকশন ২: ম্যানুয়াল লিস্টের জন্য ড্রাফট তৈরি করা
     if (body.action === 'prepare_manual') {
       const { emailList, customTopic } = body;
       const emails = emailList.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
@@ -133,60 +171,70 @@ export async function POST(req) {
       return NextResponse.json({ success: true, leads });
     }
 
-    // অ্যাকশন ৩: অটো-হান্টিং (Bad Website + No Website)
     if (body.action === 'discover') {
       const { category, location, targetFilter } = body;
       const leads = [];
 
-      // ক) যাদের কোনো ওয়েবসাইট নেই (No Website Hunter)
+      // ১. No Website Hunter
       if (targetFilter === 'all' || targetFilter === 'no_website') {
-        const noSiteQuery = `"${category}" "${location}" "@gmail.com" site:facebook.com`;
-        const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(noSiteQuery)}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-        });
-        const ddgHtml = await ddgRes.text();
-        const noSiteEmails = extractEmails(ddgHtml).slice(0, 4);
-
-        for (const email of noSiteEmails) {
-          const pitch = await craftPitch({ type: 'NO_WEBSITE', businessName: `${category} in ${location}` });
-          leads.push({
-            email,
-            website: 'No Website (Social Page Only)',
-            type: 'NO_WEBSITE',
-            score: 0,
-            issue: 'No standalone website found — losing Google search traffic',
-            subject: pitch.subject,
-            body: pitch.body,
-            status: 'Ready'
+        try {
+          const noSiteQuery = `${category} ${location} "@gmail.com" facebook`;
+          const res = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(noSiteQuery)}&count=15`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            signal: AbortSignal.timeout(5000)
           });
-        }
+          const html = await res.text();
+          const noSiteEmails = extractEmails(html).slice(0, 3);
+
+          for (const email of noSiteEmails) {
+            const pitch = await craftPitch({ type: 'NO_WEBSITE', businessName: `${category} in ${location}` });
+            leads.push({
+              email,
+              website: 'No Website (Social / Directory Only)',
+              type: 'NO_WEBSITE',
+              score: '0/100',
+              issue: 'No official domain — losing local Google search traffic',
+              subject: pitch.subject,
+              body: pitch.body,
+              status: 'Ready'
+            });
+          }
+        } catch {}
       }
 
-      // খ) যাদের ওয়েবসাইট খারাপ বা স্লো (Bad Website Hunter)
+      // ২. Bad Website Hunter (Fast Parallel Scan)
       if (targetFilter === 'all' || targetFilter === 'bad_website') {
-        const query = `${category} ${location} contact email`;
-        const ddgRes = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-        });
-        const html = await ddgRes.text();
-        const uddgMatches = [...html.matchAll(/uddg=([^&"]+)/g)].map(m => decodeURIComponent(m[1]));
-        const origins = [...new Set(uddgMatches.map(u => { try { return new URL(u).origin; } catch { return null; } }).filter(Boolean))];
+        const query = `${category} in ${location} contact email`;
+        const cleanUrls = await searchWebUrls(query);
 
-        const blacklist = ['duckduckgo', 'google', 'yelp', 'facebook', 'instagram', 'linkedin', 'yellowpages', 'bbb.org', 'tripadvisor', 'angi', 'thumbtack', 'zocdoc', 'healthgrades'];
-        const cleanUrls = origins.filter(u => !blacklist.some(b => u.toLowerCase().includes(b))).slice(0, 6);
+        const scannedResults = await Promise.all(
+          cleanUrls.map(async (url) => {
+            try {
+              const siteRes = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                signal: AbortSignal.timeout(4500)
+              });
+              let siteHtml = await siteRes.text();
+              let emails = extractEmails(siteHtml);
 
-        for (const url of cleanUrls) {
-          try {
-            const siteRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
-            const siteHtml = await siteRes.text();
-            const emails = extractEmails(siteHtml);
+              // Homepage-e email na pele /contact page check korbe
+              if (emails.length === 0) {
+                try {
+                  const cRes = await fetch(`${url}/contact`, { signal: AbortSignal.timeout(3000) });
+                  if (cRes.ok) {
+                    siteHtml += " " + await cRes.text();
+                    emails = extractEmails(siteHtml);
+                  }
+                } catch {}
+              }
 
-            if (emails.length > 0) {
+              if (emails.length === 0) return null;
+
               const { score, flawSummary } = auditWebsite(siteHtml);
               const domainName = new URL(url).hostname.replace('www.', '');
               const pitch = await craftPitch({ type: 'BAD_WEBSITE', businessName: domainName, url, flawSummary });
 
-              leads.push({
+              return {
                 email: emails[0],
                 website: url,
                 type: 'BAD_WEBSITE',
@@ -195,10 +243,14 @@ export async function POST(req) {
                 subject: pitch.subject,
                 body: pitch.body,
                 status: 'Ready'
-              });
+              };
+            } catch {
+              return null;
             }
-          } catch {}
-        }
+          })
+        );
+
+        leads.push(...scannedResults.filter(Boolean));
       }
 
       return NextResponse.json({ success: true, leads });
