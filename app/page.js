@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRouter } from "react";
 
 export default function StellarCommandCenterV3() {
   const [activeTab, setActiveTab] = useState("auto"); // 'auto' | 'manual' | 'database'
@@ -136,7 +136,13 @@ export default function StellarCommandCenterV3() {
     if (dbFilter === "WITH_PHONE") return l.phone && l.phone !== "Not Found" && l.phone !== "N/A";
     return true;
   });
-
+const router = useRouter();
+  useEffect(() => {
+    const isAuth = localStorage.getItem("stellar_auth");
+    if (!isAuth) {
+      router.push("/login");
+    }
+  }, [router]);
   return (
     <div className="min-h-screen p-6 md:p-10 max-w-7xl mx-auto space-y-8">
       {/* Header */}
