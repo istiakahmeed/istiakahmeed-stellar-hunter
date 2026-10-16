@@ -13,7 +13,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// ডাটাবেস কানেকশন ও অটো-টেবিল তৈরি
 async function getDb() {
   if (!process.env.DATABASE_URL) return null;
   const sql = neon(process.env.DATABASE_URL);
@@ -38,88 +37,108 @@ async function getDb() {
   return sql;
 }
 
-// ইমেইল এক্সট্রাক্টর
 function extractEmails(text) {
-  const decoded = text.replace(/&#64;/g, '@').replace(/[at]/gi, '@').replace(/mailto:/gi, ' ');
+  if (!text) return [];
+  const decoded = text
+    .replace(/&#64;/g, '@')
+    .replace(/[at]/gi, '@')
+    .replace(/\(at\)/gi, '@')
+    .replace(/mailto:/gi, ' ');
   const matches = decoded.match(/([a-zA-Z0-9._+-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
   if (!matches) return [];
   return [...new Set(matches)].filter(e => {
     const l = e.toLowerCase();
-    return !l.match(/\.(png|jpg|jpeg|webp|svg|gif|js|css|woff|ttf|ico)$/) &&
+    return !l.match(/\.(png|jpg|jpeg|webp|svg|gif|js|css|woff|ttf|ico|pdf)$/) &&
            !l.includes('sentry') && !l.includes('example') && 
            !l.includes('wixpress') && !l.includes('yourdomain') && 
            !l.includes('company.com') && !l.includes('email.com') &&
-           !l.includes('duckduckgo') && !l.includes('bing.com') && l.length < 45;
+           !l.includes('duckduckgo') && !l.includes('bing.com') && 
+           !l.includes('yahoo.com') || l.endsWith('@yahoo.com') && l.length < 48;
   });
 }
 
-// ফোন নাম্বার এক্সট্রাক্টর (US/UK/Intl নাম্বার ও tel: লিংক থেকে)
 function extractPhones(html) {
-  // ১. প্রথমে tel: লিংক চেক করবে (সবচেয়ে নির্ভুল)
+  if (!html) return 'Not Found';
   const telMatches = [...html.matchAll(/href=["']tel:([^"']+)["']/gi)].map(m => m[1].trim());
   if (telMatches.length > 0) return telMatches[0];
 
-  // ২. টেক্সটের ভেতর থেকে ফোন নাম্বার খোঁজা
   const clean = html.replace(/<[^>]+>/g, ' ');
-  const phoneRegex = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}/g;
+  // Supports Bangladesh (+880 / 017..), US, UK & International numbers
+  const phoneRegex = /(?:\+?880|0)?1[3-9]\d{8}|(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}/g;
   const matches = clean.match(phoneRegex);
   if (!matches) return 'Not Found';
 
   const valid = matches.filter(p => {
     const digits = p.replace(/\D/g, '');
-    return digits.length >= 10 && digits.length <= 13 && !digits.startsWith('000') && !digits.startsWith('197') && !digits.startsWith('202');
+    return digits.length >= 10 && digits.length <= 14 && !digits.startsWith('000') && !digits.startsWith('202');
   });
   return valid[0] || 'Not Found';
 }
 
+// Multi-Source Unblockable Search (Yahoo + Jina + DuckDuckGo Lite)
 async function searchWebUrls(query) {
-  const urls = [];
+  const rawUrls = [];
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9'
   };
 
+  // Source 1: Yahoo Search (Rarely blocks Vercel IPs)
   try {
-    const res1 = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, { headers, signal: AbortSignal.timeout(5000) });
-    const html1 = await res1.text();
-    const uddg = [...html1.matchAll(/uddg=([^&"]+)/g)].map(m => decodeURIComponent(m[1]));
-    urls.push(...uddg);
+    const yRes = await fetch(`https://search.yahoo.com/search?p=${encodeURIComponent(query)}&n=15`, {
+      headers,
+      signal: AbortSignal.timeout(5000)
+    });
+    const yHtml = await yRes.text();
+    const ruMatches = [...yHtml.matchAll(/RU=([^/]+)\/RK=/g)].map(m => decodeURIComponent(m[1]));
+    const directMatches = [...yHtml.matchAll(/href="(https?:\/\/[^"]+)"/g)].map(m => m[1]);
+    rawUrls.push(...ruMatches, ...directMatches);
   } catch {}
 
-  if (urls.length < 3) {
+  // Source 2: Jina Reader Search Proxy
+  if (rawUrls.length < 4) {
     try {
-      const res2 = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(query)}&count=15`, { headers, signal: AbortSignal.timeout(5000) });
-      const html2 = await res2.text();
-      const bingLinks = [...html2.matchAll(/href="(https?:\/\/[^"]+)"/g)].map(m => m[1]);
-      urls.push(...bingLinks);
+      const jRes = await fetch(`https://r.jina.ai/https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      const jText = await jRes.text();
+      const jLinks = [...jText.matchAll(/https?:\/\/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g)].map(m => m[0]);
+      rawUrls.push(...jLinks);
     } catch {}
   }
 
   const blacklist = [
-    'duckduckgo', 'bing.com', 'microsoft', 'google', 'yelp', 'facebook', 'instagram',
-    'linkedin', 'twitter', 'youtube', 'yellowpages', 'yell.com', 'bbb.org', 'tripadvisor',
-    'angi', 'thumbtack', 'zocdoc', 'healthgrades', 'trustpilot', 'reddit', 'wikipedia',
-    'amazon', 'apple', 'pinterest', 'tiktok', 'foursquare', 'checkatrade', 'bark.com'
+    'yahoo.com', 'duckduckgo', 'bing.com', 'microsoft', 'google', 'yelp', 'facebook',
+    'instagram', 'linkedin', 'twitter', 'youtube', 'yellowpages', 'yell.com', 'bbb.org',
+    'tripadvisor', 'angi', 'thumbtack', 'zocdoc', 'healthgrades', 'trustpilot', 'reddit',
+    'wikipedia', 'amazon', 'apple', 'pinterest', 'tiktok', 'foursquare', 'checkatrade',
+    'bark.com', 'jina.ai', 'w3.org', 'schema.org', 'practo', 'doctime', 'bdstall'
   ];
 
-  const origins = urls.map(u => {
-    try { return new URL(u).origin; } catch { return null; }
+  const origins = rawUrls.map(u => {
+    try {
+      const parsed = new URL(u);
+      return parsed.origin;
+    } catch {
+      return null;
+    }
   }).filter(Boolean);
 
-  return [...new Set(origins)].filter(u => !blacklist.some(b => u.toLowerCase().includes(b))).slice(0, 7);
+  return [...new Set(origins)].filter(u => !blacklist.some(b => u.toLowerCase().includes(b))).slice(0, 8);
 }
 
 function auditWebsite(html) {
-  let score = 82;
+  let score = 80;
   const issues = [];
 
   if (html.includes('wp-content') || html.includes('wp-includes')) {
     score -= 20;
-    issues.push('heavy WordPress scripts slowing mobile load');
+    issues.push('heavy WordPress plugins slowing mobile load');
   }
   if (html.includes('wix.com') || html.includes('squarespace.com') || html.includes('godaddy')) {
     score -= 30;
-    issues.push('page-builder layout limiting local search ranking');
+    issues.push('page-builder layout limiting local Google ranking');
   }
   if (!html.toLowerCase().includes('name="viewport"')) {
     score -= 25;
@@ -135,61 +154,39 @@ function auditWebsite(html) {
   }
 
   if (issues.length === 0) {
-    score = 64;
+    score = 62;
     issues.push('mobile layout and booking flow bottlenecks');
   }
 
   return {
-    score: Math.max(score, 24),
+    score: Math.max(score, 25),
     flawSummary: issues.slice(0, 2).join(' and ')
   };
 }
 
-// Anti-Spam Zero-Link Pitch Generator
-async function craftPitch({ type, businessName, flawSummary, customTopic }) {
+// Fast Synchronous Fallback + Optional AI Pitch
+function buildInstantPitch({ type, businessName, flawSummary, customTopic }) {
   const cleanName = businessName
-    ? businessName.replace(/\.(com|net|org|co\.uk|io|us)$/i, '').replace(/[-_]/g, ' ')
+    ? businessName.replace(/\.(com|net|org|co\.uk|io|us|bd)$/i, '').replace(/[-_]/g, ' ')
     : 'there';
 
   const greetings = ['Hi', 'Hey', 'Hello'];
   const signOffs = ['Best,', 'Cheers,', 'Thanks,', 'Regards,'];
   const greet = greetings[Math.floor(Math.random() * greetings.length)];
-  const sign = signOffs[Math.floor(Math.random() * signOffss?.length || 0)] || 'Best,';
+  const sign = signOffs[Math.floor(Math.random() * signOffs.length)];
 
-  try {
-    const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
-    const prompt = `
-      Write a plain-text, conversational 1-on-1 email from Istiak Ahmed (Founder at Stellar Worm) to ${cleanName}.
-      Context: ${type === 'NO_WEBSITE' ? 'They have great local reviews and an active Google Business/social presence, but no official standalone website yet.' : `We noticed ${flawSummary || customTopic || 'a mobile layout issue on their site'}.`}
-      
-      STRICT ANTI-SPAM RULES:
-      1. DO NOT include ANY URLs, links, or ".com" domain names anywhere.
-      2. DO NOT use spam trigger words like: free, boost, conversion, guarantee, click, 100%, agency, marketing, SEO.
-      3. Keep it between 40 and 55 words. Sound like a helpful developer writing from their phone.
-      4. Subject line: 2 to 4 words, lowercase, casual.
-      5. End with: "Mind if I send over a quick 2-minute mockup I put together for you?"
-      
-      Return ONLY valid JSON: {"subject": "...", "body": "..."}
-    `;
-
-    const res = await model.generateContent(prompt);
-    const raw = res.response.text().replace(/```json|```/g, '').trim();
-    return JSON.parse(raw);
-  } catch {
-    if (type === 'NO_WEBSITE') {
-      return {
-        subject: `quick question for ${cleanName}`,
-        body: `${greet} team,\n\nI saw your business profile and great customer reviews while looking up ${cleanName}, and noticed you don't have a standalone website linked yet.\n\nI'm a web engineer at Stellar Worm, and I mocked up a clean, fast homepage concept tailored for your business.\n\nMind if I send over the preview link for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
-      };
-    }
+  if (type === 'NO_WEBSITE') {
     return {
-      subject: `${cleanName} mobile view`,
-      body: `${greet} ${cleanName} team,\n\nI was browsing your site on my phone earlier and noticed ${flawSummary || 'a couple of mobile layout bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I put together a cleaner, faster version of your homepage layout just to show the difference.\n\nMind if I send over a quick 2-minute preview?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
+      subject: `quick question for ${cleanName}`,
+      body: `${greet} team,\n\nI saw your business profile and great customer reviews while looking up ${cleanName}, and noticed you don't have a standalone website linked yet.\n\nI'm a web engineer at Stellar Worm, and I mocked up a clean, fast homepage concept tailored for your business.\n\nMind if I send over the preview link for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
     };
   }
+  return {
+    subject: `${cleanName} mobile view`,
+    body: `${greet} ${cleanName} team,\n\nI was browsing your site on my phone earlier and noticed ${flawSummary || customTopic || 'a couple of mobile layout bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I put together a cleaner, faster version of your homepage layout just to show the difference.\n\nMind if I send over a quick 2-minute preview?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
+  };
 }
 
-// GET: ডাটাবেস থেকে সব সেভ করা ক্লায়েন্টদের লিস্ট নিয়ে আসা
 export async function GET() {
   try {
     const sql = await getDb();
@@ -206,7 +203,6 @@ export async function POST(req) {
     const body = await req.json();
     const sql = await getDb();
 
-    // ১. সিঙ্গেল ইমেইল পাঠানো + ডাটাবেসে স্ট্যাটাস আপডেট করা
     if (body.action === 'send_single') {
       const { to, subject, text } = body;
       const cleanBody = text
@@ -232,7 +228,6 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
-    // ২. ডাটাবেস থেকে কোনো লিড ডিলিট করা
     if (body.action === 'delete_lead') {
       if (sql) {
         await sql`DELETE FROM stellar_leads WHERE email = ${body.email}`;
@@ -240,7 +235,6 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
-    // ৩. ম্যানুয়াল লিস্ট প্রস্তুত ও ডাটাবেসে সেভ
     if (body.action === 'prepare_manual') {
       const { emailList, customTopic } = body;
       const emails = emailList.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
@@ -248,7 +242,7 @@ export async function POST(req) {
 
       for (const email of emails) {
         const domain = email.split('@')[1]?.split('.')[0] || 'Client';
-        const pitch = await craftPitch({ type: 'MANUAL', businessName: domain, customTopic });
+        const pitch = buildInstantPitch({ type: 'MANUAL', businessName: domain, customTopic });
         const leadObj = {
           business_name: domain,
           category: 'Manual',
@@ -276,98 +270,97 @@ export async function POST(req) {
       return NextResponse.json({ success: true, leads });
     }
 
-    // ৪. অটো-হান্টিং (High-Performing GBP No-Website + Bad Website + Phone Number)
     if (body.action === 'discover') {
       const { category, location, targetFilter } = body;
       const leads = [];
+      let debugInfo = [];
 
-      // ক) যাদের Google Business / Social-এ ভালো রিভিউ ও ফোন নাম্বার আছে কিন্তু নিজস্ব ওয়েবসাইট নেই
+      // ১. No-Website / GBP Hunter (Yahoo Search for Gmail/Phone on Social & Local Listings)
       if (targetFilter === 'all' || targetFilter === 'no_website') {
         try {
-          const queries = [
-            `"${category}" "${location}" ("reviews" OR "rated" OR "stars") "@gmail.com" site:facebook.com`,
-            `"${category}" "${location}" "@gmail.com" ("call" OR "phone" OR "booking") site:instagram.com OR site:facebook.com`
-          ];
+          const noSiteQuery = `${category} ${location} "gmail.com" contact phone`;
+          const yRes = await fetch(`https://search.yahoo.com/search?p=${encodeURIComponent(noSiteQuery)}&n=20`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+            signal: AbortSignal.timeout(5000)
+          });
+          const html = await yRes.text();
+          const foundEmails = extractEmails(html).slice(0, 4);
+          const foundPhone = extractPhones(html);
+          debugInfo.push(`No-Website scan found ${foundEmails.length} emails`);
 
-          for (const q of queries) {
-            const res = await fetch(`https://www.bing.com/search?q=${encodeURIComponent(q)}&count=15`, {
-              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-              signal: AbortSignal.timeout(4500)
-            });
-            const html = await res.text();
-            const foundEmails = extractEmails(html).slice(0, 3);
-            const foundPhone = extractPhones(html);
+          for (const email of foundEmails) {
+            const bName = email.split('@')[0].replace(/[0-9._-]/g, ' ').trim() || `${category} (${location})`;
+            const pitch = buildInstantPitch({ type: 'NO_WEBSITE', businessName: bName });
+            const leadObj = {
+              business_name: bName,
+              category,
+              location,
+              email,
+              phone: foundPhone,
+              website: 'GBP / Social Only (No Website)',
+              lead_type: 'NO_WEBSITE',
+              audit_score: '0/100',
+              issue: 'Active local business with phone/email, but NO standalone website',
+              subject: pitch.subject,
+              body: pitch.body,
+              status: 'Ready'
+            };
+            leads.push(leadObj);
 
-            for (const email of foundEmails) {
-              const bName = email.split('@')[0].replace(/[0-9._-]/g, ' ').trim() || `${category} (${location})`;
-              const pitch = await craftPitch({ type: 'NO_WEBSITE', businessName: bName });
-              const leadObj = {
-                business_name: bName,
-                category,
-                location,
-                email,
-                phone: foundPhone,
-                website: 'GBP / Social Only (No Website)',
-                lead_type: 'NO_WEBSITE',
-                audit_score: '0/100',
-                issue: 'Active business with reviews/customers, but NO standalone website',
-                subject: pitch.subject,
-                body: pitch.body,
-                status: 'Ready'
-              };
-              leads.push(leadObj);
-
-              if (sql) {
-                await sql`
-                  INSERT INTO stellar_leads (business_name, category, location, email, phone, website, lead_type, audit_score, issue, subject, body, status)
-                  VALUES (${leadObj.business_name}, ${leadObj.category}, ${leadObj.location}, ${leadObj.email}, ${leadObj.phone}, ${leadObj.website}, ${leadObj.lead_type}, ${leadObj.audit_score}, ${leadObj.issue}, ${leadObj.subject}, ${leadObj.body}, 'Ready')
-                  ON CONFLICT (email) DO NOTHING
-                `;
-              }
+            if (sql) {
+              await sql`
+                INSERT INTO stellar_leads (business_name, category, location, email, phone, website, lead_type, audit_score, issue, subject, body, status)
+                VALUES (${leadObj.business_name}, ${leadObj.category}, ${leadObj.location}, ${leadObj.email}, ${leadObj.phone}, ${leadObj.website}, ${leadObj.lead_type}, ${leadObj.audit_score}, ${leadObj.issue}, ${leadObj.subject}, ${leadObj.body}, 'Ready')
+                ON CONFLICT (email) DO NOTHING
+              `;
             }
           }
-        } catch {}
+        } catch (e) {
+          debugInfo.push(`No-Website scan error: ${e.message}`);
+        }
       }
 
-      // খ) যাদের ওয়েবসাইট খারাপ বা পুরনো + তাদের ফোন নাম্বার ও ইমেইল সংগ্রহ
+      // ২. Bad Website Hunter
       if (targetFilter === 'all' || targetFilter === 'bad_website') {
-        const query = `${category} in ${location} contact phone email`;
+        const query = `${category} ${location} contact email`;
         const cleanUrls = await searchWebUrls(query);
+        debugInfo.push(`Found ${cleanUrls.length} candidate websites to scan`);
 
         const scannedResults = await Promise.all(
           cleanUrls.map(async (url) => {
             try {
               const siteRes = await fetch(url, {
                 headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                signal: AbortSignal.timeout(4500)
+                signal: AbortSignal.timeout(4000)
               });
               let siteHtml = await siteRes.text();
               let emails = extractEmails(siteHtml);
               let phone = extractPhones(siteHtml);
 
-              if (emails.length === 0 || phone === 'Not Found') {
+              if (emails.length === 0) {
                 try {
-                  const cRes = await fetch(`${url}/contact`, { signal: AbortSignal.timeout(3000) });
+                  const cRes = await fetch(`${url}/contact`, { signal: AbortSignal.timeout(2500) });
                   if (cRes.ok) {
-                    const contactHtml = await cRes.text();
-                    siteHtml += " " + contactHtml;
-                    if (emails.length === 0) emails = extractEmails(siteHtml);
-                    if (phone === 'Not Found') phone = extractPhones(contactHtml);
+                    const cHtml = await cRes.text();
+                    siteHtml += " " + cHtml;
+                    emails = extractEmails(siteHtml);
+                    if (phone === 'Not Found') phone = extractPhones(cHtml);
                   }
                 } catch {}
               }
 
-              if (emails.length === 0) return null;
+              // যদি সাইটে কোনো ইমেইল না থাকে কিন্তু ফোন নাম্বার থাকে, তবুও ডোমেইন দিয়ে `info@domain.com` গেস করে সেভ করবে!
+              const domainName = new URL(url).hostname.replace('www.', '');
+              const finalEmail = emails[0] || `info@${domainName}`;
 
               const { score, flawSummary } = auditWebsite(siteHtml);
-              const domainName = new URL(url).hostname.replace('www.', '');
-              const pitch = await craftPitch({ type: 'BAD_WEBSITE', businessName: domainName, url, flawSummary });
+              const pitch = buildInstantPitch({ type: 'BAD_WEBSITE', businessName: domainName, url, flawSummary });
 
               const leadObj = {
                 business_name: domainName,
                 category,
                 location,
-                email: emails[0],
+                email: finalEmail,
                 phone,
                 website: url,
                 lead_type: 'BAD_WEBSITE',
@@ -396,7 +389,7 @@ export async function POST(req) {
         leads.push(...scannedResults.filter(Boolean));
       }
 
-      return NextResponse.json({ success: true, leads });
+      return NextResponse.json({ success: true, leads, debug: debugInfo.join(' | ') });
     }
 
     return NextResponse.json({ success: false, error: 'Invalid action' }, { status: 400 });
