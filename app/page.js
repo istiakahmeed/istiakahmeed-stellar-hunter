@@ -1,35 +1,48 @@
 "use client";
 import { useState, useEffect } from "react";
 
-export default function StellarCommandCenter() {
-  const [mode, setMode] = useState("auto");
-  const [category, setCategory] = useState("MedSpa");
+export default function StellarCommandCenterV3() {
+  const [activeTab, setActiveTab] = useState("auto"); // 'auto' | 'manual' | 'database'
+  const [category, setCategory] = useState("Dental Clinic");
   const [location, setLocation] = useState("Miami Florida");
   const [targetFilter, setTargetFilter] = useState("all");
   const [emailList, setEmailList] = useState("");
   const [customTopic, setCustomTopic] = useState("");
 
   const [leads, setLeads] = useState([]);
+  const [dbLeads, setDbLeads] = useState([]);
+  const [dbConnected, setDbConnected] = useState(false);
+  const [dbFilter, setDbFilter] = useState("ALL");
+
   const [scanning, setScanning] = useState(false);
   const [sending, setSending] = useState(false);
   const [selectedLead, setSelectedLead] = useState(null);
-  const [sentHistory, setSentHistory] = useState([]);
+
+  async function loadDatabaseLeads() {
+    try {
+      const res = await fetch("/api/hunt");
+      const data = await res.json();
+      if (data.success) {
+        setDbLeads(data.leads || []);
+        setDbConnected(data.dbConnected);
+      }
+    } catch {}
+  }
 
   useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem("stellar_sent_emails") || "[]");
-    setSentHistory(saved);
+    loadDatabaseLeads();
   }, []);
 
-  // ধাপ ১: লিড খুঁজে বের করা এবং AI ইমেইল ড্রাফট তৈরি করা
   async function handleDiscover(e) {
     e.preventDefault();
     setScanning(true);
     setLeads([]);
 
     try {
-      const payload = mode === "auto"
-        ? { action: "discover", category, location, targetFilter }
-        : { action: "prepare_manual", emailList, customTopic };
+      const payload =
+        activeTab === "auto"
+          ? { action: "discover", category, location, targetFilter }
+          : { action: "prepare_manual", emailList, customTopic };
 
       const res = await fetch("/api/hunt", {
         method: "POST",
@@ -39,12 +52,8 @@ export default function StellarCommandCenter() {
       const data = await res.json();
 
       if (data.success) {
-        // আগে মেইল পাঠানো হয়েছে এমন ইমেইল মার্ক করে দেওয়া
-        const checkedLeads = data.leads.map(l => ({
-          ...l,
-          status: sentHistory.includes(l.email.toLowerCase()) ? "Already Sent Earlier ⚠️" : "Ready"
-        }));
-        setLeads(checkedLeads);
+        setLeads(data.leads);
+        loadDatabaseLeads(); // সাথে সাথে ডাটাবেস রিফ্রেশ হবে
       } else {
         alert("Error: " + data.error);
       }
@@ -54,17 +63,15 @@ export default function StellarCommandCenter() {
     setScanning(false);
   }
 
-  // ধাপ ২: একে একে নিরাপদ বিরতি দিয়ে সব ইমেইল পাঠানো (No Vercel Timeout!)
-  async function handleSendAll() {
+  async function handleSendAll(targetArray, isFromDb = false) {
     setSending(true);
-    const updated = [...leads];
-    const history = [...sentHistory];
+    const updated = [...targetArray];
 
     for (let i = 0; i < updated.length; i++) {
-      if (updated[i].status !== "Ready") continue;
+      if (updated[i].status === "Sent ✅") continue;
 
       updated[i].status = "Sending... ⏳";
-      setLeads([...updated]);
+      isFromDb ? setDbLeads([...updated]) : setLeads([...updated]);
 
       try {
         const res = await fetch("/api/hunt", {
@@ -78,241 +85,387 @@ export default function StellarCommandCenter() {
           }),
         });
         const data = await res.json();
-
-        if (data.success) {
-          updated[i].status = "Sent ✅";
-          history.push(updated[i].email.toLowerCase());
-          localStorage.setItem("stellar_sent_emails", JSON.stringify(history));
-          setSentHistory([...history]);
-        } else {
-          updated[i].status = "Failed ❌";
-        }
+        updated[i].status = data.success ? "Sent ✅" : "Failed ❌";
       } catch {
         updated[i].status = "Failed ❌";
       }
 
-      setLeads([...updated]);
-      // স্প্যাম ফোল্ডার এড়াতে প্রতি মেইলের মাঝে ১২ সেকেন্ড বিরতি
+      isFromDb ? setDbLeads([...updated]) : setLeads([...updated]);
       if (i < updated.length - 1) {
         await new Promise((r) => setTimeout(r, 12000));
       }
     }
     setSending(false);
+    loadDatabaseLeads();
   }
 
-  function removeLead(index) {
-    setLeads(leads.filter((_, idx) => idx !== index));
+  async function deleteFromDb(email) {
+    await fetch("/api/hunt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete_lead", email }),
+    });
+    loadDatabaseLeads();
   }
+
+  function exportToCSV() {
+    const headers = ["Business Name", "Category", "Location", "Email", "Phone", "Website", "Type", "Audit Score", "Issue", "Status"];
+    const rows = dbLeads.map(l => [
+      `"${l.business_name || ''}"`,
+      `"${l.category || ''}"`,
+      `"${l.location || ''}"`,
+      `"${l.email || ''}"`,
+      `"${l.phone || ''}"`,
+      `"${l.website || ''}"`,
+      `"${l.lead_type || ''}"`,
+      `"${l.audit_score || ''}"`,
+      `"${(l.issue || '').replace(/"/g, "'")}"`,
+      `"${l.status || ''}"`
+    ]);
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", `stellar_worm_leads_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+  }
+
+  const filteredDbLeads = dbLeads.filter(l => {
+    if (dbFilter === "BAD_WEBSITE") return l.lead_type === "BAD_WEBSITE";
+    if (dbFilter === "NO_WEBSITE") return l.lead_type === "NO_WEBSITE";
+    if (dbFilter === "WITH_PHONE") return l.phone && l.phone !== "Not Found" && l.phone !== "N/A";
+    return true;
+  });
 
   return (
-    <div className="min-h-screen p-6 md:p-10 max-w-6xl mx-auto space-y-8">
-      {/* Top Navbar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800/80 pb-6">
+    <div className="min-h-screen p-6 md:p-10 max-w-7xl mx-auto space-y-8">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-6">
         <div>
           <div className="flex items-center gap-3">
             <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
             <h1 className="text-2xl font-bold tracking-tight text-white">
-              STELLAR WORM <span className="text-emerald-400 font-mono text-sm">// OUTREACH ENGINE v2.0</span>
+              STELLAR WORM <span className="text-emerald-400 font-mono text-sm">// CRM & OUTREACH ENGINE v3.0</span>
             </h1>
           </div>
           <p className="text-zinc-400 text-sm mt-1">
-            Automated Website Auditor, No-Website Detector & Cold Email Dispatcher
+            PostgreSQL Lead Database, Phone & Email Extractor, GBP No-Website & Bad-Website Hunter
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono text-zinc-400 bg-zinc-900 border border-zinc-800 px-3 py-2 rounded-lg">
-            Total Contacted: <strong className="text-emerald-400">{sentHistory.length}</strong>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className={`text-xs font-mono px-3 py-2 rounded-lg border ${dbConnected ? "bg-emerald-950/40 border-emerald-800 text-emerald-300" : "bg-amber-950/40 border-amber-800 text-amber-300"}`}>
+            {dbConnected ? `● DB Connected (${dbLeads.length} Saved)` : "○ Add DATABASE_URL in Vercel"}
           </span>
+
           <div className="flex bg-zinc-900 p-1 rounded-lg border border-zinc-800">
             <button
-              onClick={() => setMode("auto")}
-              className={`px-4 py-2 rounded-md text-xs font-semibold uppercase tracking-wider transition ${
-                mode === "auto" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
+              onClick={() => setActiveTab("auto")}
+              className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
+                activeTab === "auto" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
               }`}
             >
               Auto-Hunter
             </button>
             <button
-              onClick={() => setMode("manual")}
-              className={`px-4 py-2 rounded-md text-xs font-semibold uppercase tracking-wider transition ${
-                mode === "manual" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
+              onClick={() => setActiveTab("manual")}
+              className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
+                activeTab === "manual" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
               }`}
             >
               Manual List
             </button>
+            <button
+              onClick={() => { setActiveTab("database"); loadDatabaseLeads(); }}
+              className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
+                activeTab === "database" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Saved Leads DB ({dbLeads.length})
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Search / Input Form */}
-      <form onSubmit={handleDiscover} className="bg-zinc-900/50 border border-zinc-800/90 rounded-2xl p-6 space-y-6 backdrop-blur">
-        {mode === "auto" ? (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                1. Target Business Category
-              </label>
-              <input
-                type="text"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                placeholder="e.g. Dental Clinic, Law Firm, Restaurant"
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
-                required
-              />
-            </div>
+      {/* TAB 1 & 2: HUNTER & MANUAL */}
+      {activeTab !== "database" ? (
+        <>
+          <form onSubmit={handleDiscover} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-6">
+            {activeTab === "auto" ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
+                    1. Target Business Category
+                  </label>
+                  <input
+                    type="text"
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                    placeholder="e.g. Dental Clinic, MedSpa, Plumber, Restaurant"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
+                    required
+                  />
+                </div>
 
-            <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                2. Target City / Country
-              </label>
-              <input
-                type="text"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="e.g. Austin Texas, London, Dhaka"
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
-                required
-              />
-            </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
+                    2. Target City & Country
+                  </label>
+                  <input
+                    type="text"
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    placeholder="e.g. London UK, Austin Texas, Miami Florida"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
+                    required
+                  />
+                </div>
 
-            <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                3. Filter Prospects By
-              </label>
-              <select
-                value={targetFilter}
-                onChange={(e) => setTargetFilter(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
+                    3. Target Filter
+                  </label>
+                  <select
+                    value={targetFilter}
+                    onChange={(e) => setTargetFilter(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
+                  >
+                    <option value="all">Both (Bad Websites + GBP With No Website)</option>
+                    <option value="bad_website">Only Bad / Outdated Websites (+Phone/Email)</option>
+                    <option value="no_website">Active GBP / Social With NO Website (+Phone/Email)</option>
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
+                    Paste Client Emails
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={emailList}
+                    onChange={(e) => setEmailList(e.target.value)}
+                    placeholder="ceo@company.com&#10;info@dentalmiami.com"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white font-mono focus:border-emerald-500 outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
+                    Custom Pitch Context
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={customTopic}
+                    onChange={(e) => setCustomTopic(e.target.value)}
+                    placeholder="e.g. Noticed your mobile layout is slow..."
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white focus:border-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-4">
+              <button
+                type="submit"
+                disabled={scanning || sending}
+                className="flex-1 bg-zinc-100 hover:bg-white disabled:bg-zinc-800 text-black font-semibold py-3.5 px-6 rounded-xl transition cursor-pointer"
               >
-                <option value="all">Both (Bad Websites + No Website)</option>
-                <option value="bad_website">Only Bad / Outdated Websites</option>
-                <option value="no_website">Only Businesses With NO Website</option>
-              </select>
+                {scanning ? "🔍 Scraping Emails, Phones & Saving to DB..." : "1. Hunt Prospects & Save to Database"}
+              </button>
+
+              {leads.some((l) => l.status !== "Sent ✅") && (
+                <button
+                  type="button"
+                  onClick={() => handleSendAll(leads, false)}
+                  disabled={sending}
+                  className="flex-1 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-700 text-black font-bold py-3.5 px-6 rounded-xl transition cursor-pointer"
+                >
+                  {sending ? "🚀 Sending Safely..." : `2. Send Emails to Discovered List (${leads.length})`}
+                </button>
+              )}
+            </div>
+          </form>
+
+          {/* Current Session Results */}
+          <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6">
+            <h2 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-4">
+              // Current Discovery Queue ({leads.length} Found & Auto-Saved to DB)
+            </h2>
+            {leads.length === 0 ? (
+              <p className="text-center py-10 text-zinc-500 text-sm">
+                {scanning ? "Scanning websites, extracting phone numbers & emails..." : "Click 'Hunt Prospects' above to find clients."}
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800 text-zinc-400 text-xs font-mono uppercase">
+                      <th className="pb-3">Email</th>
+                      <th className="pb-3">Phone / WhatsApp</th>
+                      <th className="pb-3">Website / GBP Status</th>
+                      <th className="pb-3">Audit</th>
+                      <th className="pb-3">Detected Issue</th>
+                      <th className="pb-3">Status</th>
+                      <th className="pb-3 text-right">Edit</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60">
+                    {leads.map((item, i) => (
+                      <tr key={i} className="hover:bg-zinc-900/60">
+                        <td className="py-3 font-mono text-emerald-400 text-xs">{item.email}</td>
+                        <td className="py-3 font-mono text-zinc-200 text-xs">{item.phone || "Not Found"}</td>
+                        <td className="py-3 text-zinc-300 text-xs">{item.website}</td>
+                        <td className="py-3 font-mono text-xs">
+                          <span className="px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20">
+                            {item.audit_score}
+                          </span>
+                        </td>
+                        <td className="py-3 text-amber-300/90 text-xs max-w-xs truncate">{item.issue}</td>
+                        <td className="py-3 font-medium text-xs">{item.status}</td>
+                        <td className="py-3 text-right">
+                          <button
+                            onClick={() => setSelectedLead({ ...item, index: i })}
+                            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1 rounded text-zinc-200"
+                          >
+                            Preview
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        /* TAB 3: SAVED DATABASE CRM VIEW */
+        <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 space-y-6">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-zinc-800 pb-4">
+            <div className="flex flex-wrap gap-2">
+              {["ALL", "BAD_WEBSITE", "NO_WEBSITE", "WITH_PHONE"].map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setDbFilter(f)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono transition ${
+                    dbFilter === f ? "bg-emerald-500 text-black font-bold" : "bg-zinc-900 text-zinc-400 border border-zinc-800"
+                  }`}
+                >
+                  {f === "ALL" && `All Saved (${dbLeads.length})`}
+                  {f === "BAD_WEBSITE" && `Bad Websites (${dbLeads.filter(l => l.lead_type === "BAD_WEBSITE").length})`}
+                  {f === "NO_WEBSITE" && `No Website / GBP (${dbLeads.filter(l => l.lead_type === "NO_WEBSITE").length})`}
+                  {f === "WITH_PHONE" && `Has Phone Number (${dbLeads.filter(l => l.phone && l.phone !== "Not Found" && l.phone !== "N/A").length})`}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={exportToCSV}
+                className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold px-4 py-2 rounded-lg border border-zinc-700"
+              >
+                ⬇ Export CSV / Excel
+              </button>
+              <button
+                onClick={() => handleSendAll(filteredDbLeads, true)}
+                disabled={sending}
+                className="bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-4 py-2 rounded-lg"
+              >
+                {sending ? "Sending..." : "🚀 Email All Unsent in View"}
+              </button>
             </div>
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                Paste Client Emails (Comma or Newline separated)
-              </label>
-              <textarea
-                rows={4}
-                value={emailList}
-                onChange={(e) => setEmailList(e.target.value)}
-                placeholder="ceo@company.com&#10;info@dentalmiami.com"
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white font-mono focus:border-emerald-500 outline-none"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                Custom Pitch Angle (Optional)
-              </label>
-              <textarea
-                rows={4}
-                value={customTopic}
-                onChange={(e) => setCustomTopic(e.target.value)}
-                placeholder="e.g. We noticed your site is slow on mobile. Pitching our Next.js revamp or ready templates from orthinal.com..."
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white focus:border-emerald-500 outline-none"
-              />
-            </div>
-          </div>
-        )}
 
-        <div className="flex flex-wrap gap-4">
-          <button
-            type="submit"
-            disabled={scanning || sending}
-            className="flex-1 bg-zinc-100 hover:bg-white disabled:bg-zinc-800 text-black font-semibold py-3.5 px-6 rounded-xl transition cursor-pointer"
-          >
-            {scanning ? "🔍 Scanning Web & Generating AI Audits..." : "1. Find Prospects & Generate Emails"}
-          </button>
-
-          {leads.some((l) => l.status === "Ready") && (
-            <button
-              type="button"
-              onClick={handleSendAll}
-              disabled={sending}
-              className="flex-1 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-700 text-black font-bold py-3.5 px-6 rounded-xl transition cursor-pointer"
-            >
-              {sending ? "🚀 Dispatching Emails Safely..." : `2. Send All Ready Emails (${leads.filter(l => l.status === "Ready").length})`}
-            </button>
+          {filteredDbLeads.length === 0 ? (
+            <p className="text-center py-12 text-zinc-500 text-sm">
+              No saved leads match this filter yet. Run Auto-Hunter to populate your database!
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800 text-zinc-400 text-xs font-mono uppercase">
+                    <th className="pb-3">Business / Location</th>
+                    <th className="pb-3">Email</th>
+                    <th className="pb-3">Phone & WhatsApp</th>
+                    <th className="pb-3">Website / Type</th>
+                    <th className="pb-3">Audit Issue</th>
+                    <th className="pb-3">Email Status</th>
+                    <th className="pb-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60">
+                  {filteredDbLeads.map((item, i) => {
+                    const cleanDigits = (item.phone || "").replace(/\D/g, "");
+                    return (
+                      <tr key={i} className="hover:bg-zinc-900/60">
+                        <td className="py-3.5">
+                          <div className="font-semibold text-white text-xs">{item.business_name}</div>
+                          <div className="text-zinc-500 text-[11px]">{item.category} • {item.location}</div>
+                        </td>
+                        <td className="py-3.5 font-mono text-emerald-400 text-xs">{item.email}</td>
+                        <td className="py-3.5 font-mono text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="text-zinc-200">{item.phone || "Not Found"}</span>
+                            {cleanDigits.length >= 10 && (
+                              <a
+                                href={`https://wa.me/${cleanDigits}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] hover:bg-emerald-500 hover:text-black transition"
+                              >
+                                WhatsApp ↗
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3.5 text-xs">
+                          {item.website?.startsWith("http") ? (
+                            <a href={item.website} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                              {item.website}
+                            </a>
+                          ) : (
+                            <span className="text-amber-400 font-medium">{item.website}</span>
+                          )}
+                        </td>
+                        <td className="py-3.5 text-zinc-400 text-xs max-w-xs truncate">{item.issue}</td>
+                        <td className="py-3.5 text-xs font-medium">{item.status}</td>
+                        <td className="py-3.5 text-right space-x-2">
+                          <button
+                            onClick={() => setSelectedLead({ ...item, index: i })}
+                            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1 rounded text-zinc-200"
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={() => deleteFromDb(item.email)}
+                            className="text-xs bg-red-950/60 hover:bg-red-900 text-red-300 px-2 py-1 rounded"
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-      </form>
+      )}
 
-      {/* Results & Audit Table */}
-      <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6">
-        <h2 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-4">
-          // Discovered Prospects & AI Pitch Queue ({leads.length})
-        </h2>
-
-        {leads.length === 0 ? (
-          <div className="text-center py-12 text-zinc-500 text-sm">
-            {scanning
-              ? "Crawling search results, auditing HTML structure, and writing custom pitches..."
-              : "No prospects loaded yet. Click 'Find Prospects' above to start."}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-zinc-800 text-zinc-400 text-xs font-mono uppercase">
-                  <th className="pb-3">Email</th>
-                  <th className="pb-3">Website / Source</th>
-                  <th className="pb-3">Audit Score</th>
-                  <th className="pb-3">Detected Issue</th>
-                  <th className="pb-3">Status</th>
-                  <th className="pb-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-800/60">
-                {leads.map((item, i) => (
-                  <tr key={i} className="hover:bg-zinc-900/60">
-                    <td className="py-3.5 font-mono text-emerald-400">{item.email}</td>
-                    <td className="py-3.5 text-zinc-300 text-xs">{item.website}</td>
-                    <td className="py-3.5 font-mono text-xs">
-                      <span className="px-2 py-1 rounded bg-red-500/10 text-red-400 border border-red-500/20">
-                        {item.score}
-                      </span>
-                    </td>
-                    <td className="py-3.5 text-amber-300/90 text-xs max-w-xs truncate">{item.issue}</td>
-                    <td className="py-3.5 font-medium text-xs">{item.status}</td>
-                    <td className="py-3.5 text-right space-x-2">
-                      <button
-                        onClick={() => setSelectedLead({ ...item, index: i })}
-                        className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1.5 rounded-md text-zinc-200"
-                      >
-                        Preview / Edit
-                      </button>
-                      <button
-                        onClick={() => removeLead(i)}
-                        className="text-xs bg-red-950/60 hover:bg-red-900/60 text-red-300 px-2.5 py-1.5 rounded-md"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Email Preview & Edit Modal */}
+      {/* Preview Modal */}
       {selectedLead && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-              <h3 className="font-semibold text-white">Edit Pitch for {selectedLead.email}</h3>
+              <h3 className="font-semibold text-white">Pitch for {selectedLead.email}</h3>
               <button onClick={() => setSelectedLead(null)} className="text-zinc-400 hover:text-white">✕</button>
             </div>
             <div>
-              <label className="block text-xs text-zinc-400 mb-1">Subject Line</label>
+              <label className="block text-xs text-zinc-400 mb-1">Subject</label>
               <input
                 type="text"
                 value={selectedLead.subject}
@@ -321,7 +474,7 @@ export default function StellarCommandCenter() {
               />
             </div>
             <div>
-              <label className="block text-xs text-zinc-400 mb-1">Email Body</label>
+              <label className="block text-xs text-zinc-400 mb-1">Body</label>
               <textarea
                 rows={7}
                 value={selectedLead.body}
@@ -329,17 +482,12 @@ export default function StellarCommandCenter() {
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-sm text-white font-mono"
               />
             </div>
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex justify-end">
               <button
-                onClick={() => {
-                  const copy = [...leads];
-                  copy[selectedLead.index] = selectedLead;
-                  setLeads(copy);
-                  setSelectedLead(null);
-                }}
+                onClick={() => setSelectedLead(null)}
                 className="bg-emerald-500 text-black font-semibold px-4 py-2 rounded-lg text-sm"
               >
-                Save Changes
+                Done
               </button>
             </div>
           </div>
