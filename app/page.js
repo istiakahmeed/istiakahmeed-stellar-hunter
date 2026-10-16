@@ -1,5 +1,6 @@
 "use client";
-import { useState, useEffect, useRouter } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 
 export default function StellarCommandCenterV3() {
   const [activeTab, setActiveTab] = useState("auto"); // 'auto' | 'manual' | 'database'
