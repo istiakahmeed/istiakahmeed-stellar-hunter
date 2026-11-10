@@ -1,24 +1,38 @@
 "use client";
 import { useState, useEffect } from "react";
 
-export default function StellarCommandCenterV4() {
-  // Built-in Team Login Lock
+export default function StellarCommandCenterV5() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState(false);
 
-  // Dashboard States
-  const [activeTab, setActiveTab] = useState("auto"); // 'auto' | 'manual' | 'database'
-  const [category, setCategory] = useState("Dental Clinic");
-  const [location, setLocation] = useState("Dhaka");
+  const [activeTab, setActiveTab] = useState("manual"); // 'auto' | 'manual' | 'database'
+  const [category, setCategory] = useState("MedSpa");
+  const [location, setLocation] = useState("Miami Florida");
   const [targetFilter, setTargetFilter] = useState("all");
+
+  // Custom Email Composer States
   const [emailList, setEmailList] = useState("");
-  const [customTopic, setCustomTopic] = useState("");
+  const [customSubject, setCustomSubject] = useState("quick question for {name}");
+  const [customBody, setCustomBody] = useState(
+`Hi {name},
+
+I came across your profile earlier today and wanted to reach out directly.
+
+At Stellar Worm, we engineer fast, modern websites and custom web platforms designed to help you stand out and convert more visitors into clients.
+
+Mind if I send over a quick 2-minute concept I put together for you?
+
+Best,
+Istiak Ahmed
+Founder, Stellar Worm`
+  );
 
   const [leads, setLeads] = useState([]);
   const [dbLeads, setDbLeads] = useState([]);
   const [dbConnected, setDbConnected] = useState(false);
+  const [senderEmail, setSenderEmail] = useState("stellarworm56@gmail.com");
   const [dbFilter, setDbFilter] = useState("ALL");
 
   const [scanning, setScanning] = useState(false);
@@ -58,6 +72,7 @@ export default function StellarCommandCenterV4() {
       if (data.success) {
         setDbLeads(data.leads || []);
         setDbConnected(data.dbConnected);
+        if (data.senderEmail) setSenderEmail(data.senderEmail);
       }
     } catch {}
   }
@@ -66,13 +81,13 @@ export default function StellarCommandCenterV4() {
     e.preventDefault();
     setScanning(true);
     setLeads([]);
-    setStatusBanner("🔍 Scanning Map & Web Databases for real businesses...");
+    setStatusBanner("⏳ Preparing your email campaign...");
 
     try {
       const payload =
         activeTab === "auto"
-          ? { action: "discover", category, location, targetFilter }
-          : { action: "prepare_manual", emailList, customTopic };
+          ? { action: "discover", category, location, targetFilter, customSubject, customBody }
+          : { action: "prepare_manual", emailList, customSubject, customBody };
 
       const res = await fetch("/api/hunt", {
         method: "POST",
@@ -85,9 +100,9 @@ export default function StellarCommandCenterV4() {
         setLeads(data.leads || []);
         await loadDatabaseLeads();
         if ((data.leads || []).length > 0) {
-          setStatusBanner(`✅ Found ${data.leads.length} real prospects and saved them to your Database!`);
+          setStatusBanner(`✅ Prepared ${data.leads.length} emails! Click 'Send All Emails Now' below to dispatch from ${senderEmail}.`);
         } else {
-          setStatusBanner("⚠️ No businesses found for this exact keyword. Try a broader category like 'Dentist', 'Restaurant', 'Gym', 'Clinic', or 'Hotel'.");
+          setStatusBanner("⚠️ No leads found. Try another keyword or city.");
         }
       } else {
         setStatusBanner("❌ Error: " + data.error);
@@ -98,17 +113,33 @@ export default function StellarCommandCenterV4() {
     setScanning(false);
   }
 
-  // Anti-Spam Human Delay Sender (25-35s random gap)
+  // Apply custom message to all leads currently in Queue or DB
+  function applyCustomMessageToList(isDb = false) {
+    const target = isDb ? [...dbLeads] : [...leads];
+    const updated = target.map((item) => {
+      const nameVal = item.business_name || "there";
+      return {
+        ...item,
+        subject: customSubject.replace(/\{name\}/gi, nameVal),
+        body: customBody.replace(/\{name\}/gi, nameVal),
+        status: "Ready"
+      };
+    });
+    if (isDb) setDbLeads(updated);
+    else setLeads(updated);
+    setStatusBanner(`✅ Applied your custom email template to all ${updated.length} leads!`);
+  }
+
   async function handleSendAll(targetArray, isFromDb = false) {
     setSending(true);
     const updated = [...targetArray];
 
     for (let i = 0; i < updated.length; i++) {
-      if (updated[i].status === "Sent ✅" || updated[i].status.includes("Phone/WhatsApp")) continue;
+      if (updated[i].status === "Sent ✅") continue;
 
       updated[i].status = "Sending... ⏳";
       isFromDb ? setDbLeads([...updated]) : setLeads([...updated]);
-      setStatusBanner(`✉️ Sending plain-text pitch to ${updated[i].email}...`);
+      setStatusBanner(`✉️ Sending from ${senderEmail} to ${updated[i].email}...`);
 
       try {
         const res = await fetch("/api/hunt", {
@@ -129,15 +160,14 @@ export default function StellarCommandCenterV4() {
 
       isFromDb ? setDbLeads([...updated]) : setLeads([...updated]);
 
-      // Random 25 to 35 seconds delay between emails so Gmail NEVER flags as spam
       if (i < updated.length - 1) {
-        const randomWait = Math.floor(Math.random() * 10000) + 25000;
+        const randomWait = Math.floor(Math.random() * 8000) + 18000;
         setStatusBanner(`⏳ Anti-Spam Protection: Waiting ${Math.round(randomWait / 1000)}s before next email...`);
         await new Promise((r) => setTimeout(r, randomWait));
       }
     }
     setSending(false);
-    setStatusBanner("🎉 Campaign finished! Check your Gmail Sent folder.");
+    setStatusBanner(`🎉 All emails sent successfully from ${senderEmail}!`);
     loadDatabaseLeads();
   }
 
@@ -150,29 +180,6 @@ export default function StellarCommandCenterV4() {
     loadDatabaseLeads();
   }
 
-  function exportToCSV() {
-    const headers = ["Business Name", "Category", "Location", "Email", "Phone", "Website", "Type", "Audit Score", "Issue", "Status"];
-    const rows = dbLeads.map(l => [
-      `"${l.business_name || ''}"`,
-      `"${l.category || ''}"`,
-      `"${l.location || ''}"`,
-      `"${l.email || ''}"`,
-      `"${l.phone || ''}"`,
-      `"${l.website || ''}"`,
-      `"${l.lead_type || ''}"`,
-      `"${l.audit_score || ''}"`,
-      `"${(l.issue || '').replace(/"/g, "'")}"`,
-      `"${l.status || ''}"`
-    ]);
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-    const link = document.createElement("a");
-    link.setAttribute("href", encodeURI(csvContent));
-    link.setAttribute("download", `stellar_worm_leads_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-  }
-
-  // LOCK SCREEN UI
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-[#070709] text-zinc-100 flex items-center justify-center p-4">
@@ -180,7 +187,7 @@ export default function StellarCommandCenterV4() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold text-white tracking-tight">STELLAR WORM</h1>
-              <p className="text-xs text-emerald-400 mt-1 font-mono">// TEAM ACCESS PORTAL v4.0</p>
+              <p className="text-xs text-emerald-400 mt-1 font-mono">// TEAM ACCESS PORTAL v5.0</p>
             </div>
             <span className="text-2xl">🔒</span>
           </div>
@@ -234,7 +241,6 @@ export default function StellarCommandCenterV4() {
     return true;
   });
 
-  // MAIN DASHBOARD UI
   return (
     <div className="min-h-screen p-6 md:p-10 max-w-7xl mx-auto space-y-8">
       {/* Header */}
@@ -243,20 +249,24 @@ export default function StellarCommandCenterV4() {
           <div className="flex items-center gap-3">
             <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
             <h1 className="text-2xl font-bold tracking-tight text-white">
-              STELLAR WORM <span className="text-emerald-400 font-mono text-sm">// CLIENT ENGINE v4.0</span>
+              STELLAR WORM <span className="text-emerald-400 font-mono text-sm">// CUSTOM OUTREACH ENGINE v5.0</span>
             </h1>
           </div>
-          <p className="text-zinc-400 text-sm mt-1">
-            OpenStreetMap Geo-Scraper, Website Auditor, WhatsApp & Anti-Spam Outreach CRM
+          <p className="text-zinc-400 text-xs font-mono mt-1.5">
+            Active Sender: <span className="text-emerald-400 font-semibold">{senderEmail}</span> • {dbConnected ? `DB Connected (${dbLeads.length} Saved)` : "DB Offline"}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <span className={`text-xs font-mono px-3 py-2 rounded-lg border ${dbConnected ? "bg-emerald-950/40 border-emerald-800 text-emerald-300" : "bg-amber-950/40 border-amber-800 text-amber-300"}`}>
-            {dbConnected ? `● DB Connected (${dbLeads.length} Leads)` : "○ DB Offline"}
-          </span>
-
           <div className="flex bg-zinc-900 p-1 rounded-lg border border-zinc-800">
+            <button
+              onClick={() => setActiveTab("manual")}
+              className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
+                activeTab === "manual" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
+              }`}
+            >
+              Custom Mail Sender
+            </button>
             <button
               onClick={() => setActiveTab("auto")}
               className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
@@ -266,20 +276,12 @@ export default function StellarCommandCenterV4() {
               Auto-Hunter
             </button>
             <button
-              onClick={() => setActiveTab("manual")}
-              className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
-                activeTab === "manual" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
-              }`}
-            >
-              Manual List
-            </button>
-            <button
               onClick={() => { setActiveTab("database"); loadDatabaseLeads(); }}
               className={`px-3.5 py-2 rounded-md text-xs font-semibold uppercase transition ${
                 activeTab === "database" ? "bg-emerald-500 text-black" : "text-zinc-400 hover:text-white"
               }`}
             >
-              Saved Leads DB ({dbLeads.length})
+              Saved DB ({dbLeads.length})
             </button>
           </div>
 
@@ -292,7 +294,6 @@ export default function StellarCommandCenterV4() {
         </div>
       </div>
 
-      {/* Live Status Banner */}
       {statusBanner && (
         <div className="bg-zinc-900 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-xl text-sm font-mono flex items-center justify-between">
           <span>{statusBanner}</span>
@@ -303,8 +304,8 @@ export default function StellarCommandCenterV4() {
       {activeTab !== "database" ? (
         <>
           <form onSubmit={handleDiscover} className="bg-zinc-900/50 border border-zinc-800 rounded-2xl p-6 space-y-6">
-            {activeTab === "auto" ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {activeTab === "auto" && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 border-b border-zinc-800 pb-6">
                 <div>
                   <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
                     1. Business Category
@@ -313,7 +314,7 @@ export default function StellarCommandCenterV4() {
                     type="text"
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
-                    placeholder="Dentist, Gym, Restaurant, Clinic, Hotel, Real Estate"
+                    placeholder="Dentist, Gym, Restaurant, MedSpa"
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
                     required
                   />
@@ -327,7 +328,7 @@ export default function StellarCommandCenterV4() {
                     type="text"
                     value={location}
                     onChange={(e) => setLocation(e.target.value)}
-                    placeholder="Dhaka, London, Miami, Austin, Dubai"
+                    placeholder="Miami Florida, London UK, Austin Texas"
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
                     required
                   />
@@ -342,49 +343,84 @@ export default function StellarCommandCenterV4() {
                     onChange={(e) => setTargetFilter(e.target.value)}
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
                   >
-                    <option value="all">Both (Bad Websites + Map Listings With No Website)</option>
+                    <option value="all">Both (Bad Websites + No Website)</option>
                     <option value="bad_website">Only Bad / Slow Websites</option>
-                    <option value="no_website">Businesses With NO Website (Map Listings)</option>
+                    <option value="no_website">Businesses With NO Website</option>
                   </select>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div>
-                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                    Paste Client Emails
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={emailList}
-                    onChange={(e) => setEmailList(e.target.value)}
-                    placeholder="ceo@company.com&#10;info@dentalmiami.com"
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white font-mono focus:border-emerald-500 outline-none"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-zinc-400 mb-2">
-                    Custom Pitch Context
-                  </label>
-                  <textarea
-                    rows={4}
-                    value={customTopic}
-                    onChange={(e) => setCustomTopic(e.target.value)}
-                    placeholder="e.g. Noticed your mobile layout is slow..."
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white focus:border-emerald-500 outline-none"
-                  />
                 </div>
               </div>
             )}
 
-            <div className="flex flex-wrap gap-4">
+            {/* Custom Email Composer Section (Works for both Manual & Auto!) */}
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+              {activeTab === "manual" && (
+                <div className="md:col-span-5 space-y-2">
+                  <label className="block text-xs font-mono uppercase text-emerald-400">
+                    1. Paste Recipient Emails (One per line)
+                  </label>
+                  <textarea
+                    rows={9}
+                    value={emailList}
+                    onChange={(e) => setEmailList(e.target.value)}
+                    placeholder={"john@gmail.com\nApex Dental - info@apexdental.com\nsarah@medspamiami.com"}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white font-mono focus:border-emerald-500 outline-none"
+                    required
+                  />
+                  <p className="text-[11px] text-zinc-500">
+                    Tip: You can paste just emails, or <code className="text-zinc-300">Business Name - email@domain.com</code>
+                  </p>
+                </div>
+              )}
+
+              <div className={`${activeTab === "manual" ? "md:col-span-7" : "md:col-span-12"} space-y-4`}>
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-xs font-mono uppercase text-emerald-400">
+                      Custom Email Subject (Use {"{name}"} for dynamic client name)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => { setCustomSubject(""); setCustomBody(""); }}
+                      className="text-[11px] text-zinc-400 hover:text-white underline"
+                    >
+                      Clear (Use AI Auto-Pitch instead)
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={customSubject}
+                    onChange={(e) => setCustomSubject(e.target.value)}
+                    placeholder="e.g. quick question for {name}"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-mono uppercase text-emerald-400 mb-2">
+                    Custom Email Body (Write your exact message — {"{name}"} will auto-replace!)
+                  </label>
+                  <textarea
+                    rows={6}
+                    value={customBody}
+                    onChange={(e) => setCustomBody(e.target.value)}
+                    placeholder="Write your custom email here... Leave blank if you want the bot to auto-generate."
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 text-sm text-white font-mono focus:border-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-4 pt-2">
               <button
                 type="submit"
                 disabled={scanning || sending}
                 className="flex-1 bg-zinc-100 hover:bg-white disabled:bg-zinc-800 text-black font-semibold py-3.5 px-6 rounded-xl transition cursor-pointer"
               >
-                {scanning ? "🔍 Hunting Real Businesses & Saving to DB..." : "1. Hunt Prospects & Save to Database"}
+                {scanning
+                  ? "⏳ Loading Queue..."
+                  : activeTab === "manual"
+                  ? "1. Load Emails with My Custom Message"
+                  : "1. Hunt Prospects & Apply Custom Message"}
               </button>
 
               {leads.some((l) => l.status === "Ready") && (
@@ -394,70 +430,63 @@ export default function StellarCommandCenterV4() {
                   disabled={sending}
                   className="flex-1 bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-700 text-black font-bold py-3.5 px-6 rounded-xl transition cursor-pointer"
                 >
-                  {sending ? "🚀 Sending with Anti-Spam Delay..." : `2. Auto-Send Emails Safely (${leads.filter(l => l.status === "Ready").length})`}
+                  {sending
+                    ? "🚀 Sending from stellarworm56@gmail.com..."
+                    : `2. Send All Emails Now (${leads.filter(l => l.status === "Ready").length})`}
                 </button>
               )}
             </div>
           </form>
 
-          {/* Current Queue */}
+          {/* Queue Table */}
           <div className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6">
-            <h2 className="text-xs font-mono uppercase tracking-wider text-zinc-400 mb-4">
-              // Current Discovery Queue ({leads.length} Found)
-            </h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xs font-mono uppercase tracking-wider text-zinc-400">
+                // Outbox Queue ({leads.length} Emails Ready)
+              </h2>
+              {leads.length > 0 && (
+                <button
+                  onClick={() => applyCustomMessageToList(false)}
+                  className="text-xs bg-zinc-800 hover:bg-zinc-700 text-emerald-300 px-3 py-1.5 rounded-lg border border-zinc-700"
+                >
+                  ↻ Re-Apply Above Custom Text to All
+                </button>
+              )}
+            </div>
+
             {leads.length === 0 ? (
               <p className="text-center py-10 text-zinc-500 text-sm">
-                {scanning ? "Querying OpenStreetMap & Web Databases..." : "Enter a Category (e.g. Dentist, Gym, Restaurant) & City above, then click Hunt Prospects."}
+                Paste your emails or hunt prospects above, then click button #1 to preview before sending.
               </p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-zinc-800 text-zinc-400 text-xs font-mono uppercase">
-                      <th className="pb-3">Business</th>
-                      <th className="pb-3">Email</th>
-                      <th className="pb-3">Phone / WhatsApp</th>
-                      <th className="pb-3">Website / Status</th>
+                      <th className="pb-3">Name</th>
+                      <th className="pb-3">Recipient Email</th>
+                      <th className="pb-3">Subject Line</th>
                       <th className="pb-3">Status</th>
-                      <th className="pb-3 text-right">Action</th>
+                      <th className="pb-3 text-right">Preview / Edit</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60">
-                    {leads.map((item, i) => {
-                      const cleanDigits = (item.phone || "").replace(/\D/g, "");
-                      const waText = encodeURIComponent(`Hi ${item.business_name} team! I came across your business in ${item.location} and put together a quick 2-minute website preview for you. Mind if I share the link? - Istiak, Stellar Worm`);
-                      return (
-                        <tr key={i} className="hover:bg-zinc-900/60">
-                          <td className="py-3 font-semibold text-white text-xs">{item.business_name}</td>
-                          <td className="py-3 font-mono text-emerald-400 text-xs">{item.email}</td>
-                          <td className="py-3 font-mono text-zinc-200 text-xs">
-                            <div className="flex items-center gap-2">
-                              <span>{item.phone}</span>
-                              {cleanDigits.length >= 10 && (
-                                <a
-                                  href={`https://wa.me/${cleanDigits}?text=${waText}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] hover:bg-emerald-500 hover:text-black"
-                                >
-                                  WhatsApp ↗
-                                </a>
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-3 text-zinc-300 text-xs">{item.website}</td>
-                          <td className="py-3 font-medium text-xs">{item.status}</td>
-                          <td className="py-3 text-right space-x-2">
-                            <button
-                              onClick={() => setSelectedLead({ ...item, index: i })}
-                              className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1 rounded text-zinc-200"
-                            >
-                              Preview Pitch
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {leads.map((item, i) => (
+                      <tr key={i} className="hover:bg-zinc-900/60">
+                        <td className="py-3 font-semibold text-white text-xs">{item.business_name}</td>
+                        <td className="py-3 font-mono text-emerald-400 text-xs">{item.email}</td>
+                        <td className="py-3 text-zinc-300 text-xs">{item.subject}</td>
+                        <td className="py-3 font-medium text-xs">{item.status}</td>
+                        <td className="py-3 text-right">
+                          <button
+                            onClick={() => setSelectedLead({ ...item, index: i, isDb: false })}
+                            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-3 py-1 rounded text-zinc-200"
+                          >
+                            Edit Individual Mail
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -485,103 +514,64 @@ export default function StellarCommandCenterV4() {
               ))}
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-2">
               <button
-                onClick={exportToCSV}
-                className="bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold px-4 py-2 rounded-lg border border-zinc-700"
+                onClick={() => applyCustomMessageToList(true)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-emerald-300 text-xs font-semibold px-3.5 py-2 rounded-lg border border-zinc-700"
               >
-                ⬇ Export CSV
+                ✍️ Apply My Custom Mail to All DB Leads
               </button>
               <button
                 onClick={() => handleSendAll(filteredDbLeads, true)}
                 disabled={sending}
                 className="bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-4 py-2 rounded-lg"
               >
-                {sending ? "Sending..." : "🚀 Auto-Email All Ready"}
+                {sending ? "Sending..." : "🚀 Send to All in View"}
               </button>
             </div>
           </div>
 
           {filteredDbLeads.length === 0 ? (
             <p className="text-center py-12 text-zinc-500 text-sm">
-              No leads in this view yet. Go to Auto-Hunter and click Hunt Prospects!
+              No saved leads in this filter yet.
             </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-zinc-400 text-xs font-mono uppercase">
-                    <th className="pb-3">Business & City</th>
+                    <th className="pb-3">Business</th>
                     <th className="pb-3">Email</th>
-                    <th className="pb-3">Phone / WhatsApp</th>
-                    <th className="pb-3">Website / Type</th>
+                    <th className="pb-3">Phone</th>
+                    <th className="pb-3">Subject</th>
                     <th className="pb-3">Status</th>
                     <th className="pb-3 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
-                  {filteredDbLeads.map((item, i) => {
-                    const cleanDigits = (item.phone || "").replace(/\D/g, "");
-                    const waText = encodeURIComponent(`Hi ${item.business_name} team! I came across your business in ${item.location} and mocked up a fast, modern website concept for you. Mind if I share the preview link? - Istiak, Stellar Worm`);
-                    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(item.email)}&su=${encodeURIComponent(item.subject || '')}&body=${encodeURIComponent(item.body || '')}`;
-
-                    return (
-                      <tr key={i} className="hover:bg-zinc-900/60">
-                        <td className="py-3.5">
-                          <div className="font-semibold text-white text-xs">{item.business_name}</div>
-                          <div className="text-zinc-500 text-[11px]">{item.category} • {item.location}</div>
-                        </td>
-                        <td className="py-3.5 font-mono text-emerald-400 text-xs">{item.email}</td>
-                        <td className="py-3.5 font-mono text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="text-zinc-200">{item.phone}</span>
-                            {cleanDigits.length >= 10 && (
-                              <a
-                                href={`https://wa.me/${cleanDigits}?text=${waText}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] hover:bg-emerald-500 hover:text-black"
-                              >
-                                WhatsApp ↗
-                              </a>
-                            )}
-                          </div>
-                        </td>
-                        <td className="py-3.5 text-xs">
-                          {item.website?.startsWith("http") ? (
-                            <a href={item.website} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
-                              {item.website}
-                            </a>
-                          ) : (
-                            <span className="text-amber-400 font-medium">{item.website}</span>
-                          )}
-                        </td>
-                        <td className="py-3.5 text-xs font-medium">{item.status}</td>
-                        <td className="py-3.5 text-right space-x-1.5">
-                          <a
-                            href={gmailUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2.5 py-1 rounded hover:bg-blue-500 hover:text-black"
-                          >
-                            1-Click Gmail ↗
-                          </a>
-                          <button
-                            onClick={() => setSelectedLead({ ...item, index: i })}
-                            className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1 rounded text-zinc-200"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => deleteFromDb(item.email)}
-                            className="text-xs bg-red-950/60 hover:bg-red-900 text-red-300 px-2 py-1 rounded"
-                          >
-                            ✕
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {filteredDbLeads.map((item, i) => (
+                    <tr key={i} className="hover:bg-zinc-900/60">
+                      <td className="py-3 font-semibold text-white text-xs">{item.business_name}</td>
+                      <td className="py-3 font-mono text-emerald-400 text-xs">{item.email}</td>
+                      <td className="py-3 font-mono text-zinc-300 text-xs">{item.phone}</td>
+                      <td className="py-3 text-zinc-300 text-xs truncate max-w-xs">{item.subject}</td>
+                      <td className="py-3 text-xs font-medium">{item.status}</td>
+                      <td className="py-3 text-right space-x-2">
+                        <button
+                          onClick={() => setSelectedLead({ ...item, index: i, isDb: true })}
+                          className="text-xs bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1 rounded text-zinc-200"
+                        >
+                          Edit Mail
+                        </button>
+                        <button
+                          onClick={() => deleteFromDb(item.email)}
+                          className="text-xs bg-red-950/60 hover:bg-red-900 text-red-300 px-2 py-1 rounded"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -589,12 +579,12 @@ export default function StellarCommandCenterV4() {
         </div>
       )}
 
-      {/* Modal */}
+      {/* Individual Email Editor Modal */}
       {selectedLead && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 space-y-4">
             <div className="flex justify-between items-center border-b border-zinc-800 pb-3">
-              <h3 className="font-semibold text-white">Pitch for {selectedLead.business_name}</h3>
+              <h3 className="font-semibold text-white">Edit Email for {selectedLead.email}</h3>
               <button onClick={() => setSelectedLead(null)} className="text-zinc-400 hover:text-white">✕</button>
             </div>
             <div>
@@ -607,20 +597,31 @@ export default function StellarCommandCenterV4() {
               />
             </div>
             <div>
-              <label className="block text-xs text-zinc-400 mb-1">Body (Zero-Link Anti-Spam Format)</label>
+              <label className="block text-xs text-zinc-400 mb-1">Message Body</label>
               <textarea
-                rows={7}
+                rows={8}
                 value={selectedLead.body}
                 onChange={(e) => setSelectedLead({ ...selectedLead, body: e.target.value })}
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-sm text-white font-mono"
               />
             </div>
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
               <button
-                onClick={() => setSelectedLead(null)}
+                onClick={() => {
+                  if (selectedLead.isDb) {
+                    const copy = [...dbLeads];
+                    copy[selectedLead.index] = selectedLead;
+                    setDbLeads(copy);
+                  } else {
+                    const copy = [...leads];
+                    copy[selectedLead.index] = selectedLead;
+                    setLeads(copy);
+                  }
+                  setSelectedLead(null);
+                }}
                 className="bg-emerald-500 text-black font-semibold px-4 py-2 rounded-lg text-sm"
               >
-                Close
+                Save Changes
               </button>
             </div>
           </div>
