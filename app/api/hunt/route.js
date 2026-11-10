@@ -5,10 +5,12 @@ import { neon } from '@neondatabase/serverless';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const SENDER_EMAIL = process.env.GMAIL_USER || 'stellarworm56@gmail.com';
+
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.GMAIL_USER,
+    user: SENDER_EMAIL,
     pass: process.env.GMAIL_APP_PASSWORD,
   },
 });
@@ -72,7 +74,7 @@ function extractEmails(text) {
   if (!text) return [];
   const decoded = text
     .replace(/&#64;/g, '@')
-    .replace(/[at]/gi, '@')
+    .replace(/\[at\]/gi, '@')
     .replace(/mailto:/gi, ' ');
   const matches = decoded.match(/([a-zA-Z0-9._+-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/gi);
   if (!matches) return [];
@@ -103,12 +105,25 @@ function extractPhones(html) {
   return valid[0] || 'Not Found';
 }
 
-function buildAntiSpamPitch({ type, businessName, isPersonal = false, flawSummary, customTopic }) {
+// Custom Template অথবা Auto Anti-Spam Pitch তৈরির ফাংশন
+function buildPitch({ type, businessName, isPersonal = false, flawSummary, customSubject, customBody }) {
   const cleanName = (businessName || 'there')
     .replace(/\.(com|net|org|co\.uk|io|us|bd)$/i, '')
     .replace(/[-_]/g, ' ')
     .trim();
 
+  // যদি আপনি নিজের মতো করে কাস্টম মেইল বডি লিখে দেন, তাহলে সেটাই ব্যবহার করবে!
+  if (customBody && customBody.trim().length > 0) {
+    const targetName = cleanName.toLowerCase() === 'there' ? 'there' : cleanName;
+    const finalSubject = (customSubject && customSubject.trim().length > 0)
+      ? customSubject.replace(/\{name\}/gi, targetName)
+      : `quick question for ${targetName === 'there' ? 'you' : targetName}`;
+
+    const finalBody = customBody.replace(/\{name\}/gi, targetName);
+    return { subject: finalSubject, body: finalBody };
+  }
+
+  // আর কাস্টম বডি খালি রাখলে অটোমেটিক অ্যান্টি-স্প্যাম মেইল তৈরি করবে
   const greetings = ['Hi', 'Hey', 'Hello'];
   const signOffs = ['Best,', 'Cheers,', 'Thanks,', 'Regards,'];
   const greet = greetings[Math.floor(Math.random() * greetings.length)];
@@ -132,20 +147,18 @@ function buildAntiSpamPitch({ type, businessName, isPersonal = false, flawSummar
 
   return {
     subject: `quick question about ${subjectTarget}`.toLowerCase(),
-    body: `${salutation}\n\nI was checking out your online presence earlier and noticed ${flawSummary || customTopic || 'a couple of mobile layout and speed bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I mocked up a cleaner, faster homepage layout concept just to show the difference.\n\nMind if I send over a quick 2-minute preview for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
+    body: `${salutation}\n\nI was checking out your online presence earlier and noticed ${flawSummary || 'a couple of mobile layout and speed bottlenecks'}.\n\nI'm a web engineer at Stellar Worm, and I mocked up a cleaner, faster homepage layout concept just to show the difference.\n\nMind if I send over a quick 2-minute preview for you to see?\n\n${sign}\nIstiak Ahmed\nStellar Worm`
   };
 }
 
-// ENGINE 1 & 2: Photon Komoot Geo-API + Overpass Fast Mirror (Never fails, works for Mirpur Dhaka & Worldwide)
 async function findRealLocalBusinesses(category, location) {
   const results = [];
   const seenNames = new Set();
 
-  // 1A: Photon Komoot Search (Ultra-fast, no rate limits!)
   try {
     const q = `${category} ${location}`;
     const pRes = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=20`, {
-      headers: { 'User-Agent': 'StellarWormCRM/4.0' },
+      headers: { 'User-Agent': 'StellarWormCRM/5.0' },
       signal: AbortSignal.timeout(4500)
     });
     const pData = await pRes.json();
@@ -164,12 +177,11 @@ async function findRealLocalBusinesses(category, location) {
     }
   } catch {}
 
-  // 1B: Nominatim + Overpass Fast Mirror (if we need more leads)
   if (results.length < 10) {
     try {
       const geoRes = await fetch(
         `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`,
-        { headers: { 'User-Agent': 'StellarWormCRM/4.0' }, signal: AbortSignal.timeout(4000) }
+        { headers: { 'User-Agent': 'StellarWormCRM/5.0' }, signal: AbortSignal.timeout(4000) }
       );
       const geoData = await geoRes.json();
 
@@ -181,27 +193,18 @@ async function findRealLocalBusinesses(category, location) {
         let osmFilter = `["name"~"${kw}",i]`;
         if (kw.includes('dent')) osmFilter = `["amenity"~"dentist|clinic|doctors"]`;
         else if (kw.includes('gym') || kw.includes('fitness')) osmFilter = `["leisure"~"fitness_centre|sports_centre"]`;
-        else if (kw.includes('restaur') || kw.includes('cafe') || kw.includes('food') || kw.includes('burger')) osmFilter = `["amenity"~"restaurant|cafe|fast_food"]`;
-        else if (kw.includes('law') || kw.includes('legal') || kw.includes('agency') || kw.includes('software')) osmFilter = `["office"]`;
+        else if (kw.includes('restaur') || kw.includes('cafe') || kw.includes('food')) osmFilter = `["amenity"~"restaurant|cafe|fast_food"]`;
+        else if (kw.includes('law') || kw.includes('legal') || kw.includes('agency')) osmFilter = `["office"]`;
         else if (kw.includes('spa') || kw.includes('salon') || kw.includes('beauty')) osmFilter = `["shop"~"beauty|hairdresser|massage"]`;
         else if (kw.includes('hotel') || kw.includes('resort')) osmFilter = `["tourism"~"hotel|guest_house"]`;
-        else if (kw.includes('clinic') || kw.includes('hospital') || kw.includes('med')) osmFilter = `["amenity"~"clinic|hospital|doctors|pharmacy"]`;
+        else if (kw.includes('clinic') || kw.includes('hospital') || kw.includes('med')) osmFilter = `["amenity"~"clinic|hospital|doctors"]`;
 
         const overpassQuery = `[out:json][timeout:6];(node${osmFilter}(around:10000,${lat},${lon});way${osmFilter}(around:10000,${lat},${lon}););out body 30;`;
-        
-        // Try Kumi Systems fast mirror first, fallback to main Overpass
-        const mirrors = [
-          'https://overpass.kumi.systems/api/interpreter',
-          'https://overpass-api.de/api/interpreter'
-        ];
+        const mirrors = ['https://overpass.kumi.systems/api/interpreter', 'https://overpass-api.de/api/interpreter'];
 
         for (const mirror of mirrors) {
           try {
-            const osmRes = await fetch(mirror, {
-              method: 'POST',
-              body: overpassQuery,
-              signal: AbortSignal.timeout(5000)
-            });
+            const osmRes = await fetch(mirror, { method: 'POST', body: overpassQuery, signal: AbortSignal.timeout(5000) });
             const osmJson = await osmRes.json();
             for (const el of osmJson.elements || []) {
               const tags = el.tags || {};
@@ -226,7 +229,6 @@ async function findRealLocalBusinesses(category, location) {
   return results;
 }
 
-// ENGINE 3: DuckDuckGo Lite Form POST Scraper (Bypasses GET Bot-Blocks)
 async function searchWebsitesViaDDGLite(query) {
   try {
     const res = await fetch('https://lite.duckduckgo.com/lite/', {
@@ -240,12 +242,8 @@ async function searchWebsitesViaDDGLite(query) {
     });
     const html = await res.text();
     const links = [...html.matchAll(/href="(https?:\/\/[^"]+)"/g)].map(m => m[1]);
-    const blacklist = ['duckduckgo', 'google', 'facebook', 'instagram', 'linkedin', 'youtube', 'yelp', 'tripadvisor', 'wikipedia', 'yellowpages', 'bbb.org', 'justdial', 'bdstall'];
-    
-    const origins = links.map(u => {
-      try { return new URL(u).origin; } catch { return null; }
-    }).filter(Boolean);
-
+    const blacklist = ['duckduckgo', 'google', 'facebook', 'instagram', 'linkedin', 'youtube', 'yelp', 'tripadvisor', 'wikipedia', 'yellowpages', 'bbb.org'];
+    const origins = links.map(u => { try { return new URL(u).origin; } catch { return null; } }).filter(Boolean);
     return [...new Set(origins)].filter(u => !blacklist.some(b => u.toLowerCase().includes(b))).slice(0, 8);
   } catch {
     return [];
@@ -255,9 +253,9 @@ async function searchWebsitesViaDDGLite(query) {
 export async function GET() {
   try {
     const sql = await getDb();
-    if (!sql) return NextResponse.json({ success: true, leads: [], dbConnected: false });
+    if (!sql) return NextResponse.json({ success: true, leads: [], dbConnected: false, senderEmail: SENDER_EMAIL });
     const rows = await sql`SELECT * FROM stellar_leads ORDER BY created_at DESC LIMIT 500`;
-    return NextResponse.json({ success: true, leads: rows, dbConnected: true });
+    return NextResponse.json({ success: true, leads: rows, dbConnected: true, senderEmail: SENDER_EMAIL });
   } catch (err) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
@@ -268,23 +266,20 @@ export async function POST(req) {
     const body = await req.json();
     const sql = await getDb();
 
+    // ১. সিঙ্গেল ইমেইল পাঠানো (কাস্টম মেইলে যা লিখবেন ঠিক সেটাই যাবে)
     if (body.action === 'send_single') {
       const { to, subject, text } = body;
-      const cleanBody = text
-        .replace(/https?:\/\/[^\s)]+/gi, '')
-        .replace(/stellarworm\.com/gi, 'Stellar Worm')
-        .replace(/orthinal\.com/gi, 'Orthinal');
 
       await transporter.sendMail({
-        from: `"Istiak Ahmed" <${process.env.GMAIL_USER}>`,
-        replyTo: process.env.GMAIL_USER,
+        from: `"Istiak Ahmed | Stellar Worm" <${SENDER_EMAIL}>`,
+        replyTo: SENDER_EMAIL,
         to,
         subject,
-        text: cleanBody,
+        text,
       });
 
       if (sql) {
-        await sql`UPDATE stellar_leads SET status = 'Sent ✅', subject = ${subject}, body = ${cleanBody} WHERE email = ${to}`;
+        await sql`UPDATE stellar_leads SET status = 'Sent ✅', subject = ${subject}, body = ${text} WHERE email = ${to}`;
       }
       return NextResponse.json({ success: true });
     }
@@ -296,31 +291,33 @@ export async function POST(req) {
       return NextResponse.json({ success: true });
     }
 
+    // ২. ম্যানুয়াল এবং কাস্টম ইমেইল কম্পোজার
     if (body.action === 'prepare_manual') {
-      const { emailList, customTopic } = body;
+      const { emailList, customSubject, customBody } = body;
       const rawItems = emailList.split(/[\n,;]+/).map(e => e.trim()).filter(Boolean);
       const leads = [];
 
       for (const rawItem of rawItems) {
         const { email, name, isPersonal } = getSmartNameFromEmail(rawItem);
-        const pitch = buildAntiSpamPitch({
+        const pitch = buildPitch({
           type: 'MANUAL',
           businessName: name,
           isPersonal,
-          customTopic
+          customSubject,
+          customBody
         });
 
         const displayBusiness = name === 'there' ? email.split('@')[0] : name;
         const leadObj = {
           business_name: displayBusiness,
-          category: 'Manual',
+          category: 'Custom Campaign',
           location: 'Direct',
           email,
           phone: 'Not Found',
           website: 'Direct Outreach',
           lead_type: 'MANUAL',
-          audit_score: 'N/A',
-          issue: customTopic || 'Custom Outreach',
+          audit_score: 'Custom',
+          issue: customBody ? 'Custom Written Email' : 'Auto Anti-Spam Pitch',
           subject: pitch.subject,
           body: pitch.body,
           status: 'Ready'
@@ -331,19 +328,18 @@ export async function POST(req) {
           await sql`
             INSERT INTO stellar_leads (business_name, category, location, email, phone, website, lead_type, audit_score, issue, subject, body, status)
             VALUES (${leadObj.business_name}, ${leadObj.category}, ${leadObj.location}, ${leadObj.email}, ${leadObj.phone}, ${leadObj.website}, ${leadObj.lead_type}, ${leadObj.audit_score}, ${leadObj.issue}, ${leadObj.subject}, ${leadObj.body}, 'Ready')
-            ON CONFLICT (email) DO UPDATE SET subject = EXCLUDED.subject, body = EXCLUDED.body
+            ON CONFLICT (email) DO UPDATE SET subject = EXCLUDED.subject, body = EXCLUDED.body, status = 'Ready'
           `;
         }
       }
       return NextResponse.json({ success: true, leads });
     }
 
-    // ৪. অটো-হান্টার (Guaranteed Results Engine)
+    // ৩. অটো-হান্টার (এখানেও চাইলে আপনার নিজের কাস্টম টেমপ্লেট অ্যাপ্লাই করতে পারবেন)
     if (body.action === 'discover') {
-      const { category, location, targetFilter } = body;
+      const { category, location, targetFilter, customSubject, customBody } = body;
       const leads = [];
 
-      // Step 1: Get Real Local Businesses from Photon + Overpass Geo-Databases
       const localBizList = await findRealLocalBusinesses(category, location);
 
       for (const biz of localBizList) {
@@ -352,15 +348,15 @@ export async function POST(req) {
 
         const hasWebsite = Boolean(biz.website);
 
-        // If user selected "Only Bad Websites" but local map businesses don't list websites,
-        // we still include them with their likely domain/contact so the table is NEVER empty!
         if (!hasWebsite && targetFilter === 'bad_website') {
           const guessedDomain = `${cleanSlug}.com`;
           const finalEmail = biz.email || `info@${guessedDomain}`;
-          const pitch = buildAntiSpamPitch({
+          const pitch = buildPitch({
             type: 'BAD_WEBSITE',
             businessName: biz.name,
-            flawSummary: 'weak local search visibility and outdated mobile booking flow'
+            flawSummary: 'weak local search visibility and outdated mobile booking flow',
+            customSubject,
+            customBody
           });
 
           leads.push({
@@ -372,17 +368,17 @@ export async function POST(req) {
             website: `No Site Linked (Est: ${guessedDomain})`,
             lead_type: 'BAD_WEBSITE',
             audit_score: '35/100',
-            issue: 'Missing website link on map profile — losing high-intent local traffic',
+            issue: 'Missing website link on map profile',
             subject: pitch.subject,
             body: pitch.body,
             status: 'Ready'
           });
         } else if (!hasWebsite) {
           const finalEmail = biz.email || `${cleanSlug}@gmail.com`;
-          const pitch = buildAntiSpamPitch({ type: 'NO_WEBSITE', businessName: biz.name });
+          const pitch = buildPitch({ type: 'NO_WEBSITE', businessName: biz.name, customSubject, customBody });
 
           leads.push({
-            business_name: biz.name,
+            business_name: name,
             category,
             location: biz.street || location,
             email: finalEmail,
@@ -396,16 +392,17 @@ export async function POST(req) {
             status: 'Ready'
           });
         } else {
-          // Business has an official website on the map
           let cleanUrl = biz.website.startsWith('http') ? biz.website : `https://${biz.website}`;
           let domainName = cleanSlug + '.com';
           try { domainName = new URL(cleanUrl).hostname.replace('www.', ''); } catch {}
           
           const finalEmail = biz.email || `info@${domainName}`;
-          const pitch = buildAntiSpamPitch({
+          const pitch = buildPitch({
             type: 'BAD_WEBSITE',
             businessName: biz.name,
-            flawSummary: 'outdated mobile layout and slow page load'
+            flawSummary: 'outdated mobile layout and slow page load',
+            customSubject,
+            customBody
           });
 
           leads.push({
@@ -427,7 +424,6 @@ export async function POST(req) {
         if (leads.length >= 12) break;
       }
 
-      // Step 2: Also scrape DuckDuckGo Lite for live websites in that city
       if (leads.length < 10 && (targetFilter === 'all' || targetFilter === 'bad_website')) {
         const ddgUrls = await searchWebsitesViaDDGLite(`${category} ${location}`);
         const scanned = await Promise.all(
@@ -446,10 +442,12 @@ export async function POST(req) {
               } catch {}
 
               const bName = domainName.split('.')[0].toUpperCase();
-              const pitch = buildAntiSpamPitch({
+              const pitch = buildPitch({
                 type: 'BAD_WEBSITE',
                 businessName: bName,
-                flawSummary: 'slow mobile load speed and outdated UI layout'
+                flawSummary: 'slow mobile load speed and outdated UI layout',
+                customSubject,
+                customBody
               });
 
               return {
@@ -474,7 +472,6 @@ export async function POST(req) {
         leads.push(...scanned.filter(Boolean));
       }
 
-      // Save all discovered leads to Neon PostgreSQL Database
       if (sql && leads.length > 0) {
         for (const leadObj of leads) {
           try {
@@ -483,7 +480,8 @@ export async function POST(req) {
               VALUES (${leadObj.business_name}, ${leadObj.category}, ${leadObj.location}, ${leadObj.email}, ${leadObj.phone}, ${leadObj.website}, ${leadObj.lead_type}, ${leadObj.audit_score}, ${leadObj.issue}, ${leadObj.subject}, ${leadObj.body}, ${leadObj.status})
               ON CONFLICT (email) DO UPDATE SET
                 phone = EXCLUDED.phone,
-                issue = EXCLUDED.issue
+                subject = EXCLUDED.subject,
+                body = EXCLUDED.body
             `;
           } catch {}
         }
